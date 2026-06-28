@@ -64,7 +64,7 @@ def apply_cli_overrides(config, args):
     if runtime.get("mode") == "benchmark":
         runtime["sample_size"] = None
         runtime["epochs"] = 1
-        runtime["batch_size"] = max(int(runtime.get("batch_size", 8)), 32)
+        runtime["batch_size"] = max(int(runtime.get("batch_size", 8)), 16)
         runtime["max_workers"] = min(int(runtime.get("max_workers", 6)), 4)
         runtime["enable_evolution"] = False
         runtime["enable_few_shots"] = False
@@ -100,7 +100,8 @@ def build_batch_execution_prompt(config, current_skills, few_shots, batch_texts,
     few_shot_block = f"\nExamples:\n{few_shots.strip()}\n" if few_shots else ""
     batch_text_str = "\n".join(f"{idx}. {text}" for idx, text in enumerate(batch_texts, 1))
     return f"""Task: parse customer complaint texts into structured JSON.
-Output only a JSON array with exactly {len(batch_texts)} objects in the same order as inputs. No Markdown.
+Output compact JSON only: one array with exactly {len(batch_texts)} objects in the same order as inputs. No Markdown, no explanation.
+Each object must include exactly these keys: core_intent, urgency_level, entities, summary.
 Schema: {schema_str}
 Rules: {skills_block}
 {meta_prompt}{few_shot_block}Inputs:

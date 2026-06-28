@@ -4,19 +4,23 @@ import re
 
 
 class F1PostProcessor:
-    """SkillOpt-style execution policy for schema repair and confidence-gated correction.
+    """SkillOpt-style execution policy for schema repair and confidence-gated correction."""
 
-    This keeps the base model frozen. It improves F1 by using the current skill router
-    as a lightweight critic before evaluation.
-    """
+    REFUND = "\u9000\u6b3e\u7ea0\u7eb7"
+    LOGISTICS = "\u7269\u6d41\u6295\u8bc9"
+    ACCOUNT = "\u8d26\u53f7\u5c01\u7981"
+    SYSTEM_BUG = "\u7cfb\u7edfBug"
+    FALSE_AD = "\u865a\u5047\u5ba3\u4f20"
+    HIGH = "\u9ad8"
+    MEDIUM = "\u4e2d"
 
-    VALID_INTENTS = ["退款纠纷", "物流投诉", "账号封禁", "系统Bug", "虚假宣传"]
-    HIGH_URGENCY_INTENTS = {"物流投诉", "系统Bug", "账号封禁"}
-    URGENT_KEYWORDS = ["马上", "立刻", "赶紧", "投诉", "封禁", "崩溃", "黑屏", "超时", "态度差"]
+    VALID_INTENTS = [REFUND, LOGISTICS, ACCOUNT, SYSTEM_BUG, FALSE_AD]
+    HIGH_URGENCY_INTENTS = {LOGISTICS, SYSTEM_BUG, ACCOUNT}
+    URGENT_KEYWORDS = ["\u9a6c\u4e0a", "\u7acb\u523b", "\u8d76\u7d27", "\u6295\u8bc9", "\u5c01\u7981", "\u5d29\u6e83", "\u9ed1\u5c4f", "\u8d85\u65f6", "\u6001\u5ea6\u5dee"]
     ENTITY_PATTERNS = [
-        re.compile(r"(?:订单号|单号|编号|id|ID)[:：]?\s*([A-Za-z0-9-]{5,})"),
+        re.compile(r"(?:\u8ba2\u5355\u53f7|\u5355\u53f7|\u7f16\u53f7|id|ID)[:\uff1a]?\s*([A-Za-z0-9-]{5,})"),
         re.compile(r"\b\d{6,}\b"),
-        re.compile(r"\d+(?:\.\d+)?\s*(?:元|块|人民币)"),
+        re.compile(r"\d+(?:\.\d+)?\s*(?:\u5143|\u5757|\u4eba\u6c11\u5e01)"),
     ]
 
     def __init__(self, memory_bank, route_override_threshold=1):
@@ -34,7 +38,7 @@ class F1PostProcessor:
         if routed_intent and (predicted_intent not in self.VALID_INTENTS or routed_score >= self.route_override_threshold):
             optimized["core_intent"] = routed_intent
         elif predicted_intent not in self.VALID_INTENTS:
-            optimized["core_intent"] = "退款纠纷"
+            optimized["core_intent"] = self.REFUND
 
         optimized["urgency_level"] = self._optimize_urgency(input_text, optimized.get("core_intent"))
         optimized["entities"] = self._merge_entities(input_text, optimized.get("entities"))
@@ -59,10 +63,10 @@ class F1PostProcessor:
 
     def _optimize_urgency(self, input_text, intent):
         if intent in self.HIGH_URGENCY_INTENTS:
-            return "高"
+            return self.HIGH
         if any(keyword in input_text for keyword in self.URGENT_KEYWORDS):
-            return "高"
-        return "中"
+            return self.HIGH
+        return self.MEDIUM
 
     def _merge_entities(self, input_text, entities):
         merged = []
@@ -81,4 +85,4 @@ class F1PostProcessor:
         cjk_chars = re.findall(r"[\u4e00-\u9fff]", summary_text)
         if 4 <= len(summary_text) <= 20 and len(cjk_chars) >= 2:
             return summary_text
-        return "用户负面体验客诉处理"
+        return "\u7528\u6237\u8d1f\u9762\u4f53\u9a8c\u5ba2\u8bc9\u5904\u7406"
