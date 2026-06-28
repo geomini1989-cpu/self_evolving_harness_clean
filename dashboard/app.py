@@ -14,8 +14,18 @@ st.subheader("📊 核心性能指标监控 (F1 Score)")
 # 这里我们假设有一个 metrics.csv 记录了每次 Epoch 的结果
 if os.path.exists("memory/metrics.csv"):
     df = pd.read_csv("memory/metrics.csv")
+    latest = df.iloc[-1]
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("F1", f"{latest.get('f1_score', 0):.2f}")
+    metric_cols[1].metric("LLM Calls", int(latest.get("llm_calls", 0)))
+    metric_cols[2].metric("Cache Hits", int(latest.get("cache_hits", 0)))
+    metric_cols[3].metric("Tokens", int(latest.get("total_tokens", 0)))
     fig = px.line(df, x="epoch", y="f1_score", markers=True, title="模型准确率进化曲线")
     st.plotly_chart(fig, use_container_width=True)
+    if {"llm_calls", "cache_hits", "total_tokens"}.issubset(df.columns):
+        usage_df = df[["epoch", "llm_calls", "cache_hits", "total_tokens"]]
+        usage_fig = px.line(usage_df, x="epoch", y=["llm_calls", "cache_hits", "total_tokens"], markers=True, title="调用、缓存与 Token 变化")
+        st.plotly_chart(usage_fig, use_container_width=True)
 else:
     st.info("暂无进化数据，请先启动 main_loop.py")
 

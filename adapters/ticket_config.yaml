@@ -21,6 +21,7 @@ runtime:
   sample_size: 30
   enable_few_shots: false
   enable_llm_scout: false
+  enable_f1_postprocess: true
   reset_state: false
 
 cache:
@@ -31,3 +32,8 @@ evolution:
   regression_mode: "sample_then_full"
   f1_tolerance: 0.02
   sample_size: 10
+
+competition:
+  topic: "题目1：算法方向"
+  paper_direction: "SkillOS + SkillOpt"
+  method: "冻结基座模型参数，通过技能检索、执行策略门控、F1后处理和回归防退化提升指标。"

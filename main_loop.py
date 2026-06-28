@@ -9,6 +9,7 @@ import yaml
 
 from core.llm_client import BaseLLMClient
 from core.evaluator import TaskEvaluator
+from core.f1_optimizer import F1PostProcessor
 from core.memory_bank import MemoryBank
 from optimizer.attributor import SkillAttributor
 from optimizer.evolver import SkillEvolver
@@ -21,7 +22,7 @@ FALSE_AD = "\u865a\u5047\u5ba3\u4f20"
 HIGH = "\u9ad8"
 MEDIUM = "\u4e2d"
 
-DEFAULT_RUNTIME = {"batch_size": 8, "max_workers": 6, "epochs": 6, "sample_size": 30, "enable_few_shots": False, "enable_llm_scout": False, "reset_state": False}
+DEFAULT_RUNTIME = {"batch_size": 8, "max_workers": 6, "epochs": 6, "sample_size": 30, "enable_few_shots": False, "enable_llm_scout": False, "enable_f1_postprocess": True, "reset_state": False}
 DEFAULT_CACHE = {"enabled": True, "path": "memory/llm_cache.jsonl"}
 DEFAULT_EVOLUTION = {"regression_mode": "sample_then_full", "f1_tolerance": 0.02, "sample_size": 10}
 
@@ -171,7 +172,23 @@ def evaluate_batch_items(evaluator, batch_data, parsed_array, prompt):
     return results
 
 
-def run_batch_with_split(llm, evaluator, config, memory_bank, batch_data, meta_intervention, enable_few_shots):
+def evaluate_optimized_batch_items(evaluator, f1_optimizer, batch_data, parsed_array, prompt, enabled=True):
+    results = []
+    for idx, data in enumerate(batch_data):
+        raw_prediction = parsed_array[idx]
+        prediction = f1_optimizer.optimize_to_json(data["input"], raw_prediction) if enabled else json.dumps(raw_prediction, ensure_ascii=False, separators=(",", ":"))
+        eval_result = evaluator.evaluate(prediction, data["ground_truth"])
+        results.append({
+            "data": data,
+            "prompt": prompt,
+            "raw_prediction": json.dumps(raw_prediction, ensure_ascii=False, separators=(",", ":")),
+            "prediction": prediction,
+            "eval_result": eval_result,
+        })
+    return results
+
+
+def run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data, meta_intervention, enable_few_shots, enable_f1_postprocess=True):
     batch_inputs = [data["input"] for data in batch_data]
     active_categories = memory_bank.route_categories(batch_inputs)
     current_skills = memory_bank.get_skills_by_categories(active_categories)
@@ -180,13 +197,21 @@ def run_batch_with_split(llm, evaluator, config, memory_bank, batch_data, meta_i
     prediction_text = llm.generate(prompt, temperature=0.0, model_type="default", use_cache=True, max_tokens=max(500, 220 * len(batch_inputs)))
     parsed_array = evaluator._extract_json_from_text(prediction_text)
     if isinstance(parsed_array, list) and len(parsed_array) == len(batch_data):
-        return evaluate_batch_items(evaluator, batch_data, parsed_array, prompt)
+        return evaluate_optimized_batch_items(evaluator, f1_optimizer, batch_data, parsed_array, prompt, enabled=enable_f1_postprocess)
     if len(batch_data) <= 1:
-        eval_result = evaluator.evaluate(prediction_text or "{}", batch_data[0]["ground_truth"])
-        return [{"data": batch_data[0], "prompt": prompt, "prediction": prediction_text or "{}", "eval_result": eval_result}]
+        raw_prediction = evaluator._extract_json_from_text(prediction_text or "{}") or {}
+        prediction = f1_optimizer.optimize_to_json(batch_data[0]["input"], raw_prediction) if enable_f1_postprocess else json.dumps(raw_prediction, ensure_ascii=False, separators=(",", ":"))
+        eval_result = evaluator.evaluate(prediction, batch_data[0]["ground_truth"])
+        return [{
+            "data": batch_data[0],
+            "prompt": prompt,
+            "raw_prediction": prediction_text or "{}",
+            "prediction": prediction,
+            "eval_result": eval_result,
+        }]
     midpoint = len(batch_data) // 2
     print(f"[Batch] Invalid JSON array for batch size {len(batch_data)}; retrying as smaller batches.")
-    return run_batch_with_split(llm, evaluator, config, memory_bank, batch_data[:midpoint], meta_intervention, enable_few_shots) + run_batch_with_split(llm, evaluator, config, memory_bank, batch_data[midpoint:], meta_intervention, enable_few_shots)
+    return run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data[:midpoint], meta_intervention, enable_few_shots, enable_f1_postprocess) + run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data[midpoint:], meta_intervention, enable_few_shots, enable_f1_postprocess)
 
 
 def run_harness_loop():
@@ -198,6 +223,7 @@ def run_harness_loop():
     llm = BaseLLMClient(cache_enabled=bool(config["cache"].get("enabled", True)), cache_path=config["cache"].get("path", "memory/llm_cache.jsonl"))
     evaluator = TaskEvaluator(config_path)
     memory_bank = MemoryBank()
+    f1_optimizer = F1PostProcessor(memory_bank)
     attributor = SkillAttributor(llm)
     evolver = SkillEvolver(evaluator, llm)
     golden_dataset = init_real_dataset(sample_size=int(runtime.get("sample_size", 30)))
@@ -206,6 +232,7 @@ def run_harness_loop():
     batch_size = int(runtime.get("batch_size", 8))
     max_workers = int(runtime.get("max_workers", 6))
     enable_few_shots = bool(runtime.get("enable_few_shots", False))
+    enable_f1_postprocess = bool(runtime.get("enable_f1_postprocess", True))
     stuck_counter = 0
     for epoch in range(1, epochs + 1):
         epoch_started = time.time()
@@ -216,7 +243,7 @@ def run_harness_loop():
         memory_bank.refresh_skills()
         meta_intervention = stuck_counter >= 2
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(run_batch_with_split, llm, evaluator, config, memory_bank, batch_data, meta_intervention, enable_few_shots) for batch_data in chunk_dataset(golden_dataset, batch_size=batch_size)]
+            futures = [executor.submit(run_batch_with_split, llm, evaluator, config, memory_bank, f1_optimizer, batch_data, meta_intervention, enable_few_shots, enable_f1_postprocess) for batch_data in chunk_dataset(golden_dataset, batch_size=batch_size)]
             for future in concurrent.futures.as_completed(futures):
                 try:
                     results.extend(future.result())

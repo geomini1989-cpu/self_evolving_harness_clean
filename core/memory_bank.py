@@ -6,7 +6,7 @@ import re
 
 class MemoryBank:
     CATEGORY_KEYWORDS = {
-        '退款纠纷': ['退款', '退钱', '退货', '赔', '赔偿', '售后', '坏了', '不能用', '质量', '破损', '发霉', '受潮'],
+        '退款纠纷': ['退款', '退钱', '退货', '赔', '赔偿', '售后', '坏了', '不能用', '质量', '破损', '发霉', '受潮', '黑屏', '不能吃'],
         '物流投诉': ['快递', '物流', '骑手', '外卖', '配送', '送错', '迟到', '超时', '司机', '态度', '丢件', '派送'],
         '账号封禁': ['账号', '账户', '封禁', '封号', '解封', '登录', '登陆', '密码', '冻结', '异地', '风控'],
         '系统Bug': ['系统', 'bug', '崩溃', '闪退', '报错', '打不开', '卡住', '页面', '网络', '验证码', '支付失败'],
@@ -58,6 +58,10 @@ class MemoryBank:
         self._parse_skills_from_md()
 
     def route_categories(self, texts, max_categories=3):
+        scores = self.score_categories(texts)
+        return [category for category, _ in scores[:max_categories]]
+
+    def score_categories(self, texts):
         if isinstance(texts, str):
             texts = [texts]
         joined_text = "\n".join(str(text) for text in texts).lower()
@@ -67,7 +71,7 @@ class MemoryBank:
             if score:
                 scores.append((score, category))
         scores.sort(key=lambda item: (-item[0], item[1]))
-        return [category for _, category in scores[:max_categories]]
+        return [(category, score) for score, category in scores]
 
     def get_skills_by_categories(self, categories, top_k_per_cat=2, max_chars=1200):
         if not self.skills_db:

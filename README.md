@@ -2,6 +2,24 @@
 
 Clean, token-optimized version of the self-evolving customer complaint harness.
 
+## Competition direction
+
+This project targets **题目1：算法方向** from the technical competition material.
+
+Paper-inspired direction:
+
+- **SkillOS**: curate and retrieve task-specific skills from `memory/SKILL.md`.
+- **SkillOpt**: add an execution strategy layer that gates LLM outputs with skill-router confidence.
+- **Self-Harness**: keep the `execute -> evaluate -> reflect -> evolve` loop.
+
+The base LLM is frozen. The system improves F1 through framework-level optimization:
+
+- local skill routing instead of extra scout LLM calls
+- persistent deterministic LLM cache
+- schema repair and confidence-gated F1 post-processing
+- bad-case attribution, skill evolution, sample-first regression, and rollback
+- Streamlit dashboard for F1 / evolution trace
+
 ## Quick start
 
 ```powershell
@@ -13,3 +31,9 @@ python main_loop.py
 ```
 
 Do not commit `.env` or generated runtime/cache files.
+
+## Dashboard
+
+```powershell
+streamlit run dashboard/app.py
+```
