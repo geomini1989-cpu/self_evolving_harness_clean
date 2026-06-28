@@ -1,0 +1,4 @@
+openai
+datasets
+streamlit
+plotly

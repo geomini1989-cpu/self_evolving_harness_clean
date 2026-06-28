@@ -1,0 +1,177 @@
+[
+  {
+    "input": "每次都是，打电话说餐到了，结果下楼等了很久才到！送餐员就是怕等，让我等很久！！！",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐员间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "今天天气很冷，送餐师傅辛苦啦",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐师傅间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "赞！超级好吃！,配送,保温,全部高大上！",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐师傅间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "都打电话确认两次了，跟我说已经取消了，结果还是送了。本着助人为乐的原则，我还是付款了。",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐师傅间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "能再慢点吗？？！！",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐师傅间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "好吃就是太慢了",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心[骑手/配送员]间接表达对[配送环节]的不满/负面体验"
+    }
+  },
+  {
+    "input": "点心好.送货人员服务态度也非常好.赞一个。",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心[送货人员]间接表达对[服务环节]的不满/负面体验"
+    }
+  },
+  {
+    "input": "赶上人员不够没人配送,时间太长了,食物被水汽泡了",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐师傅间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "快递小哥很赞,这么冷的天辛苦了",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐师傅间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "送餐的只送到楼下，不送上楼，下次不订了。",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐师傅间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "汤面类还是不要点吧，送来味道大打折扣。其他都不错。",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐员间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "不仅送餐慢，还特难吃。红油抄手全是酱油汁，土豆饼三根土豆丝味道很差，总之太垃圾啦。以后不会再来。",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐师傅间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "送的有点慢…酱香卷还是很好吃的",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐师傅间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "这店垃圾。一个多小时才送。,而且量小。,谁吃谁上当",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐师傅间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "送错了，订的不辣饭，结果2个菜都是辣的",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐师傅间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "快递小哥很好,赞一下",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心快递小哥间接表达对物流服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "感觉不太好吃，价格贵。但是百度外卖的送餐人员态度很好！",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐人员间接表达对送餐服务的不满/负面体验",
+      "sentiment_polarity": "负向（隐性）",
+      "extraction_flag": "一线关怀-隐含客诉"
+    }
+  },
+  {
+    "input": "味道很好，送餐员态度赞",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心送餐员间接表达对配送服务的不满/负面体验"
+    }
+  },
+  {
+    "input": "几个菜基本都不好吃，鱼香肉丝相对稍好。配送员态度很好，按时送到！",
+    "output": {
+      "core_intent": "物流投诉",
+      "urgency_level": "高",
+      "entities": [],
+      "summary": "用户通过关心[具体人员类型]间接表达对[具体服务环节]的不满/负面体验",
+      "sentiment_polarity": "负向（隐性）",
+      "extraction_flag": "一线关怀-隐含客诉"
+    }
+  }
+]

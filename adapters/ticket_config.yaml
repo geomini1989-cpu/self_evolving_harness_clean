@@ -1,0 +1,33 @@
+task_metadata:
+  task_name: "复杂客诉工单解析与打标"
+  description: "将用户非结构化客诉文本解析为标准 JSON 格式，以便进行工单路由。"
+
+schema:
+  core_intent: "string; one of: 退款纠纷, 物流投诉, 账号封禁, 系统Bug, 虚假宣传"
+  urgency_level: "string; one of: 高, 中, 低"
+  entities: "array; extract key entities such as order id, amount, account id; [] if none"
+  summary: "string; summarize the user's core request in 20 Chinese chars or fewer"
+
+dataset:
+  path: "data/ticket_dataset.json"
+
+evaluation:
+  primary_metric: "f1_score"
+
+runtime:
+  batch_size: 8
+  max_workers: 6
+  epochs: 6
+  sample_size: 30
+  enable_few_shots: false
+  enable_llm_scout: false
+  reset_state: false
+
+cache:
+  enabled: true
+  path: "memory/llm_cache.jsonl"
+
+evolution:
+  regression_mode: "sample_then_full"
+  f1_tolerance: 0.02
+  sample_size: 10

@@ -1,0 +1,12 @@
+﻿.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+memory/llm_cache.jsonl
+memory/token_usage.csv
+memory/metrics.csv
+memory/latest_patch.json
+memory/SKILL_backup.md
