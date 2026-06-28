@@ -14,11 +14,14 @@ load_dotenv()
 class BaseLLMClient:
     def __init__(self, cache_enabled=True, cache_path="memory/llm_cache.jsonl", usage_log_path="memory/token_usage.csv"):
         api_key = os.getenv("API_KEY")
-        if not api_key:
-            raise ValueError("API_KEY was not found. Please check the .env file in the project root.")
+        self.offline_mode = not api_key
+        self.client = None
 
-        custom_http_client = httpx.Client(limits=httpx.Limits(max_connections=100, max_keepalive_connections=50))
-        self.client = OpenAI(api_key=api_key, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", http_client=custom_http_client)
+        if self.offline_mode:
+            print("[LLM] API_KEY not found. Running in offline demo mode. Add API_KEY to .env to enable the real model.")
+        else:
+            custom_http_client = httpx.Client(limits=httpx.Limits(max_connections=100, max_keepalive_connections=50))
+            self.client = OpenAI(api_key=api_key, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", http_client=custom_http_client)
         self.cheap_model = os.getenv("CHEAP_MODEL", "kimi-k2.6")
         self.default_model = os.getenv("DEFAULT_MODEL", "kimi-k2.6")
         self.smart_model = os.getenv("SMART_MODEL", "kimi-k2.6")
@@ -61,7 +64,10 @@ class BaseLLMClient:
                 for line in f:
                     if not line.strip():
                         continue
-                    record = json.loads(line)
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
                     key = record.get("key")
                     if key and "result" in record:
                         self.cache[key] = record["result"]
@@ -74,8 +80,9 @@ class BaseLLMClient:
             return
         os.makedirs(os.path.dirname(self.cache_path), exist_ok=True)
         record = {"key": key, "result": result, "ts": int(time.time())}
-        with open(self.cache_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+        with self._lock:
+            with open(self.cache_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
 
     def _log_usage(self, model_type, target_model, usage, elapsed_ms, cache_hit=False):
         os.makedirs(os.path.dirname(self.usage_log_path), exist_ok=True)
@@ -119,6 +126,14 @@ class BaseLLMClient:
                     self._log_usage(model_type, target_model, None, 0, cache_hit=True)
                     return cached
                 self.cache_misses += 1
+        if self.offline_mode:
+            result = self._offline_generate(prompt)
+            self._log_usage(model_type, "offline-rule-engine", None, 0)
+            if cacheable:
+                with self._lock:
+                    self.cache[cache_key] = result
+                self._append_disk_cache(cache_key, result)
+            return result
         started = time.time()
         try:
             response = self.client.chat.completions.create(
@@ -148,3 +163,58 @@ class BaseLLMClient:
                 self._log_usage(model_type, self.default_model, getattr(response, "usage", None), (time.time() - started) * 1000)
                 return response.choices[0].message.content
             raise
+
+    def _offline_generate(self, prompt):
+        if "Return only one Markdown rule block" in prompt:
+            return "## [物流投诉] 本地路由高置信度修正规则\nTrigger: 物流/快递/骑手/配送关键词命中时。\nAction: 将 core_intent 修正为物流投诉，并将 urgency_level 至少设为高。"
+        if "proposed_rule" in prompt and "root_cause_analysis" in prompt:
+            return json.dumps({
+                "error_category": "offline_demo_attribution",
+                "root_cause_analysis": "Rule-based offline attribution for demo mode.",
+                "proposed_rule": "当本地路由高置信度命中业务类别时，优先采用路由类别修正 core_intent。"
+            }, ensure_ascii=False)
+
+        inputs = self._extract_prompt_inputs(prompt)
+        predictions = [self._predict_single(text) for text in inputs]
+        return json.dumps(predictions, ensure_ascii=False, separators=(",", ":"))
+
+    def _extract_prompt_inputs(self, prompt):
+        marker = "Inputs:"
+        if marker not in prompt:
+            return [prompt[-500:]]
+        body = prompt.split(marker, 1)[1].strip()
+        inputs = []
+        for line in body.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if ". " in line:
+                _, text = line.split(". ", 1)
+                inputs.append(text.strip())
+            else:
+                inputs.append(line)
+        return inputs or [body]
+
+    def _predict_single(self, text):
+        intent = "退款纠纷"
+        if any(keyword in text for keyword in ["快递", "物流", "骑手", "外卖", "配送", "态度", "迟到", "超时"]):
+            intent = "物流投诉"
+        elif any(keyword in text for keyword in ["封禁", "封号", "账号", "账户", "解封"]):
+            intent = "账号封禁"
+        elif any(keyword in text for keyword in ["系统", "网页", "崩溃", "闪退", "密码", "报错", "登录"]):
+            intent = "系统Bug"
+        elif any(keyword in text for keyword in ["假", "骗", "图文不符", "宣传", "虚假"]):
+            intent = "虚假宣传"
+
+        urgency = "高" if intent in {"物流投诉", "系统Bug", "账号封禁"} else "中"
+        entities = []
+        for token in text.replace("，", " ").replace("。", " ").replace("：", " ").split():
+            digits = "".join(ch for ch in token if ch.isdigit())
+            if len(digits) >= 6 and digits not in entities:
+                entities.append(digits)
+        return {
+            "core_intent": intent,
+            "urgency_level": urgency,
+            "entities": entities,
+            "summary": "用户负面体验客诉处理",
+        }

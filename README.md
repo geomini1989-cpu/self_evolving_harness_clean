@@ -30,6 +30,8 @@ Copy-Item .env.example .env
 python main_loop.py
 ```
 
+If `.env` has an empty `API_KEY`, the harness runs in offline demo mode with a local rule-based model. Add a valid API key to switch to the real LLM.
+
 Do not commit `.env` or generated runtime/cache files.
 
 ## Dashboard
