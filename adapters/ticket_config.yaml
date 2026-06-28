@@ -15,13 +15,16 @@ evaluation:
   primary_metric: "f1_score"
 
 runtime:
+  mode: "demo"
   batch_size: 8
   max_workers: 6
   epochs: 6
   sample_size: 30
+  shuffle_seed: 2026
   enable_few_shots: false
   enable_llm_scout: false
   enable_f1_postprocess: true
+  enable_evolution: true
   reset_state: false
 
 cache:

@@ -6,9 +6,11 @@ import json
 import os
 import threading
 import time
+from pathlib import Path
 import httpx
 
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(PROJECT_ROOT / ".env", encoding="utf-8-sig")
 
 
 class BaseLLMClient:

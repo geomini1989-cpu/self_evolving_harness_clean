@@ -32,6 +32,28 @@ python main_loop.py
 
 If `.env` has an empty `API_KEY`, the harness runs in offline demo mode with a local rule-based model. Add a valid API key to switch to the real LLM.
 
+## Run modes
+
+Fast closed-loop demo, suitable for live presentation:
+
+```powershell
+python main_loop.py --mode demo
+```
+
+Full-dataset benchmark, suitable for final F1 reporting:
+
+```powershell
+python main_loop.py --mode benchmark
+```
+
+Benchmark mode is token-conscious by default: it evaluates the full dataset once, uses larger batches, keeps cache enabled, disables few-shot injection, and skips the attribution/evolution step.
+
+If you want a cheaper benchmark rehearsal before the full run:
+
+```powershell
+python main_loop.py --mode benchmark --sample-size 1000
+```
+
 Do not commit `.env` or generated runtime/cache files.
 
 ## Dashboard

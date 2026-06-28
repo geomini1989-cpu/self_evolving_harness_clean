@@ -1,3 +1,4 @@
+import argparse
 import concurrent.futures
 import csv
 import json
@@ -22,7 +23,7 @@ FALSE_AD = "\u865a\u5047\u5ba3\u4f20"
 HIGH = "\u9ad8"
 MEDIUM = "\u4e2d"
 
-DEFAULT_RUNTIME = {"batch_size": 8, "max_workers": 6, "epochs": 6, "sample_size": 30, "enable_few_shots": False, "enable_llm_scout": False, "enable_f1_postprocess": True, "reset_state": False}
+DEFAULT_RUNTIME = {"mode": "demo", "batch_size": 8, "max_workers": 6, "epochs": 6, "sample_size": 30, "shuffle_seed": 2026, "enable_few_shots": False, "enable_llm_scout": False, "enable_f1_postprocess": True, "enable_evolution": True, "reset_state": False}
 DEFAULT_CACHE = {"enabled": True, "path": "memory/llm_cache.jsonl"}
 DEFAULT_EVOLUTION = {"regression_mode": "sample_then_full", "f1_tolerance": 0.02, "sample_size": 10}
 
@@ -43,6 +44,41 @@ def deep_merge_defaults(config):
 def load_config(config_path="adapters/ticket_config.yaml"):
     with open(config_path, "r", encoding="utf-8") as f:
         return deep_merge_defaults(yaml.safe_load(f) or {})
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Self-Evolving Harness runner")
+    parser.add_argument("--mode", choices=["demo", "benchmark"], default=None, help="demo: 30-sample closed-loop run; benchmark: full-dataset one-pass evaluation")
+    parser.add_argument("--sample-size", default=None, help="Number of rows to evaluate, or 'all' for the full dataset")
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--max-workers", type=int, default=None)
+    parser.add_argument("--no-evolution", action="store_true", help="Skip attribution/evolution after bad cases")
+    return parser.parse_args()
+
+
+def apply_cli_overrides(config, args):
+    runtime = config["runtime"]
+    if args.mode:
+        runtime["mode"] = args.mode
+    if runtime.get("mode") == "benchmark":
+        runtime["sample_size"] = None
+        runtime["epochs"] = 1
+        runtime["batch_size"] = max(int(runtime.get("batch_size", 8)), 32)
+        runtime["max_workers"] = min(int(runtime.get("max_workers", 6)), 4)
+        runtime["enable_evolution"] = False
+        runtime["enable_few_shots"] = False
+    if args.sample_size is not None:
+        runtime["sample_size"] = None if str(args.sample_size).lower() in {"all", "full", "none"} else int(args.sample_size)
+    if args.epochs is not None:
+        runtime["epochs"] = args.epochs
+    if args.batch_size is not None:
+        runtime["batch_size"] = args.batch_size
+    if args.max_workers is not None:
+        runtime["max_workers"] = args.max_workers
+    if args.no_evolution:
+        runtime["enable_evolution"] = False
+    return config
 
 
 def load_skills():
@@ -109,7 +145,7 @@ def infer_ground_truth(text):
     return {"core_intent": intent, "urgency_level": HIGH if intent in [LOGISTICS, SYSTEM_BUG, ACCOUNT] else MEDIUM, "entities": [], "summary": "\u7528\u6237\u8d1f\u9762\u4f53\u9a8c\u5ba2\u8bc9\u5904\u7406"}
 
 
-def init_real_dataset(sample_size=30):
+def init_real_dataset(sample_size=30, shuffle_seed=2026):
     local_file = "data/dataset.csv"
     print(f"[Dataset] Loading local dataset: {local_file}")
     try:
@@ -126,10 +162,10 @@ def init_real_dataset(sample_size=30):
                         text_idx = i
                         break
             all_rows = list(reader)
-            random.seed(int(time.time()))
+            random.seed(shuffle_seed if shuffle_seed is not None else int(time.time()))
             random.shuffle(all_rows)
             for row in all_rows:
-                if len(golden_dataset) >= sample_size:
+                if sample_size is not None and len(golden_dataset) >= sample_size:
                     break
                 if len(row) <= text_idx:
                     continue
@@ -214,10 +250,10 @@ def run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batc
     return run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data[:midpoint], meta_intervention, enable_few_shots, enable_f1_postprocess) + run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data[midpoint:], meta_intervention, enable_few_shots, enable_f1_postprocess)
 
 
-def run_harness_loop():
+def run_harness_loop(config=None):
     print("[Harness] Starting Self-Evolving Harness with token-saving defaults...")
     config_path = "adapters/ticket_config.yaml"
-    config = load_config(config_path)
+    config = config or load_config(config_path)
     runtime = config["runtime"]
     prepare_demo_env(reset_state=bool(runtime.get("reset_state", False)))
     llm = BaseLLMClient(cache_enabled=bool(config["cache"].get("enabled", True)), cache_path=config["cache"].get("path", "memory/llm_cache.jsonl"))
@@ -226,13 +262,18 @@ def run_harness_loop():
     f1_optimizer = F1PostProcessor(memory_bank)
     attributor = SkillAttributor(llm)
     evolver = SkillEvolver(evaluator, llm)
-    golden_dataset = init_real_dataset(sample_size=int(runtime.get("sample_size", 30)))
-    print(f"[Harness] Dataset size: {len(golden_dataset)}")
+    sample_size = runtime.get("sample_size", 30)
+    sample_size = None if sample_size in [None, "all", "full"] else int(sample_size)
+    golden_dataset = init_real_dataset(sample_size=sample_size, shuffle_seed=runtime.get("shuffle_seed", 2026))
+    print(f"[Harness] Mode: {runtime.get('mode', 'demo')} | Dataset size: {len(golden_dataset)}")
     epochs = int(runtime.get("epochs", 6))
     batch_size = int(runtime.get("batch_size", 8))
     max_workers = int(runtime.get("max_workers", 6))
     enable_few_shots = bool(runtime.get("enable_few_shots", False))
     enable_f1_postprocess = bool(runtime.get("enable_f1_postprocess", True))
+    enable_evolution = bool(runtime.get("enable_evolution", True))
+    estimated_batches = (len(golden_dataset) + batch_size - 1) // batch_size
+    print(f"[Harness] Batch size: {batch_size} | Estimated model batches per epoch: {estimated_batches} | Epochs: {epochs}")
     stuck_counter = 0
     for epoch in range(1, epochs + 1):
         epoch_started = time.time()
@@ -264,14 +305,17 @@ def run_harness_loop():
         if avg_f1 >= 1.0:
             print("[Harness] Reached 100% F1. Evolution complete.")
             break
-        if bad_case:
+        if bad_case and enable_evolution:
             print("[Harness] Found a bad case; starting adaptive patch flow.")
             patch = attributor.analyze_root_cause(bad_case["eval_result"], bad_case["input"], bad_case["prediction"], bad_case["ground_truth"])
             log_latest_patch(patch)
             baseline_f1 = avg_f1
             new_f1, success = evolver.apply_patch_with_rollback(attributor=attributor, patch_data=patch, config=config, golden_set=golden_dataset, build_prompt_func=build_batch_execution_prompt, baseline_f1=baseline_f1)
             stuck_counter = stuck_counter + 1 if (not success or new_f1 <= baseline_f1) else 0
+        elif bad_case:
+            print("[Harness] Bad case found, but evolution is disabled for this run.")
 
 
 if __name__ == "__main__":
-    run_harness_loop()
+    args = parse_args()
+    run_harness_loop(apply_cli_overrides(load_config(), args))
