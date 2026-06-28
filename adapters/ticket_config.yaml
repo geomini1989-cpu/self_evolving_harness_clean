@@ -1,6 +1,6 @@
 task_metadata:
   task_name: "复杂客诉工单解析与打标"
-  description: "将用户非结构化客诉文本解析为标准 JSON 格式，以便进行工单路由。"
+  description: "将用户非结构化客诉文本解析为标准 JSON 格式，用于工单路由和评估。"
 
 schema:
   core_intent: "string; one of: 退款纠纷, 物流投诉, 账号封禁, 系统Bug, 虚假宣传"
@@ -24,6 +24,7 @@ runtime:
   enable_few_shots: false
   enable_llm_scout: false
   enable_f1_postprocess: true
+  enable_rule_fast_path: false
   enable_evolution: true
   reset_state: false
 
@@ -39,4 +40,4 @@ evolution:
 competition:
   topic: "题目1：算法方向"
   paper_direction: "SkillOS + SkillOpt"
-  method: "冻结基座模型参数，通过技能检索、执行策略门控、F1后处理和回归防退化提升指标。"
+  method: "冻结基座模型参数，通过技能检索、执行策略门控、F1 后处理和回归防退化提升指标。"

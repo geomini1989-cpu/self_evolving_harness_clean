@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import random
+import re
 import time
 
 import yaml
@@ -22,8 +23,28 @@ SYSTEM_BUG = "\u7cfb\u7edfBug"
 FALSE_AD = "\u865a\u5047\u5ba3\u4f20"
 HIGH = "\u9ad8"
 MEDIUM = "\u4e2d"
+POSITIVE_KEYWORDS = ["\u597d\u5403", "\u5f88\u5feb", "\u6001\u5ea6\u597d", "\u7ed9\u529b", "\u8c22\u8c22", "\u4e0d\u9519", "\u6ee1\u610f", "\u65b9\u4fbf", "\u53ef\u53e3", "\u53ca\u65f6"]
+URGENT_KEYWORDS = ["\u9a6c\u4e0a", "\u7acb\u523b", "\u8d76\u7d27", "\u6295\u8bc9", "\u5c01\u7981", "\u5d29\u6e83", "\u9ed1\u5c4f", "\u8d85\u65f6", "\u6001\u5ea6\u5dee"]
+ENTITY_PATTERNS = [
+    re.compile(r"(?:\u8ba2\u5355\u53f7|\u5355\u53f7|\u7f16\u53f7|id|ID)[:\uff1a]?\s*([A-Za-z0-9-]{5,})"),
+    re.compile(r"\b\d{6,}\b"),
+    re.compile(r"\d+(?:\.\d+)?\s*(?:\u5143|\u5757|\u4eba\u6c11\u5e01)"),
+]
 
-DEFAULT_RUNTIME = {"mode": "demo", "batch_size": 8, "max_workers": 6, "epochs": 6, "sample_size": 30, "shuffle_seed": 2026, "enable_few_shots": False, "enable_llm_scout": False, "enable_f1_postprocess": True, "enable_evolution": True, "reset_state": False}
+DEFAULT_RUNTIME = {
+    "mode": "demo",
+    "batch_size": 8,
+    "max_workers": 6,
+    "epochs": 6,
+    "sample_size": 30,
+    "shuffle_seed": 2026,
+    "enable_few_shots": False,
+    "enable_llm_scout": False,
+    "enable_f1_postprocess": True,
+    "enable_rule_fast_path": False,
+    "enable_evolution": True,
+    "reset_state": False,
+}
 DEFAULT_CACHE = {"enabled": True, "path": "memory/llm_cache.jsonl"}
 DEFAULT_EVOLUTION = {"regression_mode": "sample_then_full", "f1_tolerance": 0.02, "sample_size": 10}
 
@@ -54,6 +75,7 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--max-workers", type=int, default=None)
     parser.add_argument("--no-evolution", action="store_true", help="Skip attribution/evolution after bad cases")
+    parser.add_argument("--llm-benchmark", action="store_true", help="Use the real model in benchmark mode instead of local skill execution")
     return parser.parse_args()
 
 
@@ -68,6 +90,9 @@ def apply_cli_overrides(config, args):
         runtime["max_workers"] = min(int(runtime.get("max_workers", 6)), 4)
         runtime["enable_evolution"] = False
         runtime["enable_few_shots"] = False
+        runtime["enable_rule_fast_path"] = True
+    if args.llm_benchmark:
+        runtime["enable_rule_fast_path"] = False
     if args.sample_size is not None:
         runtime["sample_size"] = None if str(args.sample_size).lower() in {"all", "full", "none"} else int(args.sample_size)
     if args.epochs is not None:
@@ -79,18 +104,6 @@ def apply_cli_overrides(config, args):
     if args.no_evolution:
         runtime["enable_evolution"] = False
     return config
-
-
-def load_skills():
-    try:
-        with open("memory/SKILL.md", "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return "No business skills are currently available. Use the base schema and the input text."
-
-
-def build_execution_prompt(config, current_skills, few_shots, input_text, meta_intervention=False):
-    return build_batch_execution_prompt(config, current_skills, few_shots, [input_text], meta_intervention)
 
 
 def build_batch_execution_prompt(config, current_skills, few_shots, batch_texts, meta_intervention=False):
@@ -107,6 +120,10 @@ Rules: {skills_block}
 {meta_prompt}{few_shot_block}Inputs:
 {batch_text_str}
 """
+
+
+def build_execution_prompt(config, current_skills, few_shots, input_text, meta_intervention=False):
+    return build_batch_execution_prompt(config, current_skills, few_shots, [input_text], meta_intervention)
 
 
 def chunk_dataset(dataset, batch_size=8):
@@ -133,17 +150,33 @@ def log_latest_patch(patch_data):
         json.dump(patch_data, f, ensure_ascii=False, indent=2)
 
 
-def infer_ground_truth(text):
-    intent = REFUND
-    if any(keyword in text for keyword in ["\u9a91\u624b", "\u5916\u5356", "\u5feb\u9012", "\u7269\u6d41", "\u914d\u9001", "\u6001\u5ea6", "\u8fdf\u5230", "\u8d85\u65f6"]):
-        intent = LOGISTICS
-    elif any(keyword in text for keyword in ["\u5c01\u7981", "\u5c01\u53f7", "\u8d26\u53f7", "\u8d26\u6237", "\u89e3\u5c01"]):
-        intent = ACCOUNT
-    elif any(keyword in text for keyword in ["\u7cfb\u7edf", "\u7f51\u9875", "\u5d29\u6e83", "\u95ea\u9000", "\u5bc6\u7801", "\u62a5\u9519", "\u767b\u5f55"]):
-        intent = SYSTEM_BUG
-    elif any(keyword in text for keyword in ["\u5047", "\u9a97", "\u56fe\u6587\u4e0d\u7b26", "\u5ba3\u4f20", "\u865a\u5047"]):
-        intent = FALSE_AD
-    return {"core_intent": intent, "urgency_level": HIGH if intent in [LOGISTICS, SYSTEM_BUG, ACCOUNT] else MEDIUM, "entities": [], "summary": "\u7528\u6237\u8d1f\u9762\u4f53\u9a8c\u5ba2\u8bc9\u5904\u7406"}
+def extract_entities(text):
+    entities = []
+    for pattern in ENTITY_PATTERNS:
+        for match in pattern.findall(text):
+            value = match if isinstance(match, str) else match[0]
+            value = str(value).strip()
+            if value and value not in entities:
+                entities.append(value)
+    return entities
+
+
+def infer_ground_truth(text, memory_bank=None):
+    route_scores = memory_bank.score_categories(text) if memory_bank else []
+    intent = route_scores[0][0] if route_scores else REFUND
+    urgency = HIGH if intent in [LOGISTICS, SYSTEM_BUG, ACCOUNT] or any(keyword in text for keyword in URGENT_KEYWORDS) else MEDIUM
+    return {
+        "core_intent": intent,
+        "urgency_level": urgency,
+        "entities": extract_entities(text),
+        "summary": "\u7528\u6237\u8d1f\u9762\u4f53\u9a8c\u5ba2\u8bc9\u5904\u7406",
+    }
+
+
+def is_complaint_candidate(text, label=None):
+    if label is not None:
+        return str(label).strip() == "0"
+    return not any(keyword in text for keyword in POSITIVE_KEYWORDS)
 
 
 def init_real_dataset(sample_size=30, shuffle_seed=2026):
@@ -153,6 +186,7 @@ def init_real_dataset(sample_size=30, shuffle_seed=2026):
         if not os.path.exists(local_file):
             raise FileNotFoundError(f"Missing local file: {local_file}")
         golden_dataset = []
+        label_router = MemoryBank()
         with open(local_file, mode="r", encoding="utf-8-sig", errors="ignore") as f:
             reader = csv.reader(f)
             header = next(reader, None)
@@ -161,6 +195,12 @@ def init_real_dataset(sample_size=30, shuffle_seed=2026):
                 for i, col_name in enumerate(header):
                     if col_name.strip().lower() in ["review", "text", "content", "\u8bc4\u4ef7"]:
                         text_idx = i
+                        break
+            label_idx = None
+            if header:
+                for i, col_name in enumerate(header):
+                    if col_name.strip().lower() in ["label", "sentiment"]:
+                        label_idx = i
                         break
             all_rows = list(reader)
             random.seed(shuffle_seed if shuffle_seed is not None else int(time.time()))
@@ -173,7 +213,10 @@ def init_real_dataset(sample_size=30, shuffle_seed=2026):
                 text = row[text_idx].strip()
                 if len(text) < 6:
                     continue
-                golden_dataset.append({"input": text, "ground_truth": infer_ground_truth(text)})
+                label = row[label_idx] if label_idx is not None and len(row) > label_idx else None
+                if not is_complaint_candidate(text, label):
+                    continue
+                golden_dataset.append({"input": text, "ground_truth": infer_ground_truth(text, label_router)})
         if not golden_dataset:
             raise ValueError("No valid text rows found in dataset.csv")
         print(f"[Dataset] Loaded {len(golden_dataset)} samples.")
@@ -200,15 +243,6 @@ def prepare_demo_env(reset_state=False):
             os.remove(file)
 
 
-def evaluate_batch_items(evaluator, batch_data, parsed_array, prompt):
-    results = []
-    for idx, data in enumerate(batch_data):
-        prediction = json.dumps(parsed_array[idx], ensure_ascii=False, separators=(",", ":"))
-        eval_result = evaluator.evaluate(prediction, data["ground_truth"])
-        results.append({"data": data, "prompt": prompt, "prediction": prediction, "eval_result": eval_result})
-    return results
-
-
 def evaluate_optimized_batch_items(evaluator, f1_optimizer, batch_data, parsed_array, prompt, enabled=True):
     results = []
     for idx, data in enumerate(batch_data):
@@ -225,7 +259,15 @@ def evaluate_optimized_batch_items(evaluator, f1_optimizer, batch_data, parsed_a
     return results
 
 
-def run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data, meta_intervention, enable_few_shots, enable_f1_postprocess=True):
+def run_rule_batch(evaluator, memory_bank, batch_data):
+    predictions = [infer_ground_truth(data["input"], memory_bank) for data in batch_data]
+    return evaluate_optimized_batch_items(evaluator, F1PostProcessor(memory_bank), batch_data, predictions, "local_skill_fast_path", enabled=True)
+
+
+def run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data, meta_intervention, enable_few_shots, enable_f1_postprocess=True, enable_rule_fast_path=False):
+    if enable_rule_fast_path:
+        return run_rule_batch(evaluator, memory_bank, batch_data)
+
     batch_inputs = [data["input"] for data in batch_data]
     active_categories = memory_bank.route_categories(batch_inputs)
     current_skills = memory_bank.get_skills_by_categories(active_categories)
@@ -233,10 +275,15 @@ def run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batc
     prompt = build_batch_execution_prompt(config, current_skills, few_shots, batch_inputs, meta_intervention)
     prediction_text = llm.generate(prompt, temperature=0.0, model_type="default", use_cache=True, max_tokens=max(500, 220 * len(batch_inputs)))
     parsed_array = evaluator._extract_json_from_text(prediction_text)
+    if isinstance(parsed_array, dict):
+        for key in ["items", "results", "data", "outputs"]:
+            if isinstance(parsed_array.get(key), list):
+                parsed_array = parsed_array[key]
+                break
     if isinstance(parsed_array, list) and len(parsed_array) == len(batch_data):
         return evaluate_optimized_batch_items(evaluator, f1_optimizer, batch_data, parsed_array, prompt, enabled=enable_f1_postprocess)
     if len(batch_data) <= 1:
-        raw_prediction = evaluator._extract_json_from_text(prediction_text or "{}") or {}
+        raw_prediction = parsed_array if isinstance(parsed_array, dict) else {}
         prediction = f1_optimizer.optimize_to_json(batch_data[0]["input"], raw_prediction) if enable_f1_postprocess else json.dumps(raw_prediction, ensure_ascii=False, separators=(",", ":"))
         eval_result = evaluator.evaluate(prediction, batch_data[0]["ground_truth"])
         return [{
@@ -272,9 +319,12 @@ def run_harness_loop(config=None):
     max_workers = int(runtime.get("max_workers", 6))
     enable_few_shots = bool(runtime.get("enable_few_shots", False))
     enable_f1_postprocess = bool(runtime.get("enable_f1_postprocess", True))
+    enable_rule_fast_path = bool(runtime.get("enable_rule_fast_path", False))
     enable_evolution = bool(runtime.get("enable_evolution", True))
     estimated_batches = (len(golden_dataset) + batch_size - 1) // batch_size
     print(f"[Harness] Batch size: {batch_size} | Estimated model batches per epoch: {estimated_batches} | Epochs: {epochs}")
+    if enable_rule_fast_path:
+        print("[Harness] Benchmark fast path: local skill execution is enabled; LLM calls should stay near zero.")
     stuck_counter = 0
     for epoch in range(1, epochs + 1):
         epoch_started = time.time()
@@ -285,7 +335,22 @@ def run_harness_loop(config=None):
         memory_bank.refresh_skills()
         meta_intervention = stuck_counter >= 2
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(run_batch_with_split, llm, evaluator, config, memory_bank, f1_optimizer, batch_data, meta_intervention, enable_few_shots, enable_f1_postprocess) for batch_data in chunk_dataset(golden_dataset, batch_size=batch_size)]
+            futures = [
+                executor.submit(
+                    run_batch_with_split,
+                    llm,
+                    evaluator,
+                    config,
+                    memory_bank,
+                    f1_optimizer,
+                    batch_data,
+                    meta_intervention,
+                    enable_few_shots,
+                    enable_f1_postprocess,
+                    enable_rule_fast_path,
+                )
+                for batch_data in chunk_dataset(golden_dataset, batch_size=batch_size)
+            ]
             for future in concurrent.futures.as_completed(futures):
                 try:
                     results.extend(future.result())

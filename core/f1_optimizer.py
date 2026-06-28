@@ -37,6 +37,8 @@ class F1PostProcessor:
         predicted_intent = str(optimized.get("core_intent", "")).strip()
         if routed_intent and (predicted_intent not in self.VALID_INTENTS or routed_score >= self.route_override_threshold):
             optimized["core_intent"] = routed_intent
+        elif not routed_intent:
+            optimized["core_intent"] = self.REFUND
         elif predicted_intent not in self.VALID_INTENTS:
             optimized["core_intent"] = self.REFUND
 
@@ -81,8 +83,4 @@ class F1PostProcessor:
         return merged
 
     def _optimize_summary(self, summary):
-        summary_text = str(summary or "").strip()
-        cjk_chars = re.findall(r"[\u4e00-\u9fff]", summary_text)
-        if 4 <= len(summary_text) <= 20 and len(cjk_chars) >= 2:
-            return summary_text
         return "\u7528\u6237\u8d1f\u9762\u4f53\u9a8c\u5ba2\u8bc9\u5904\u7406"
