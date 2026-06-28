@@ -25,6 +25,9 @@ runtime:
   enable_llm_scout: false
   enable_f1_postprocess: true
   enable_rule_fast_path: false
+  force_evolution_demo: false
+  use_rule_attributor: false
+  use_rule_evolver: false
   enable_evolution: true
   reset_state: false
 

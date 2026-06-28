@@ -42,6 +42,9 @@ DEFAULT_RUNTIME = {
     "enable_llm_scout": False,
     "enable_f1_postprocess": True,
     "enable_rule_fast_path": False,
+    "force_evolution_demo": False,
+    "use_rule_attributor": False,
+    "use_rule_evolver": False,
     "enable_evolution": True,
     "reset_state": False,
 }
@@ -69,13 +72,14 @@ def load_config(config_path="adapters/ticket_config.yaml"):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Self-Evolving Harness runner")
-    parser.add_argument("--mode", choices=["demo", "benchmark"], default=None, help="demo: 30-sample closed-loop run; benchmark: full-dataset one-pass evaluation")
+    parser.add_argument("--mode", choices=["demo", "benchmark", "evolve-demo"], default=None, help="demo: closed-loop run; benchmark: one-pass evaluation; evolve-demo: deterministic evolution showcase")
     parser.add_argument("--sample-size", default=None, help="Number of rows to evaluate, or 'all' for the full dataset")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--max-workers", type=int, default=None)
     parser.add_argument("--no-evolution", action="store_true", help="Skip attribution/evolution after bad cases")
     parser.add_argument("--llm-benchmark", action="store_true", help="Use the real model in benchmark mode instead of local skill execution")
+    parser.add_argument("--force-evolution-demo", action="store_true", help="Force one bad-case attribution and skill evolution step")
     return parser.parse_args()
 
 
@@ -91,8 +95,22 @@ def apply_cli_overrides(config, args):
         runtime["enable_evolution"] = False
         runtime["enable_few_shots"] = False
         runtime["enable_rule_fast_path"] = True
+    if runtime.get("mode") == "evolve-demo":
+        runtime["sample_size"] = int(runtime.get("sample_size") or 30)
+        runtime["epochs"] = 1
+        runtime["batch_size"] = min(int(runtime.get("batch_size", 8)), 8)
+        runtime["max_workers"] = min(int(runtime.get("max_workers", 6)), 2)
+        runtime["enable_evolution"] = True
+        runtime["force_evolution_demo"] = True
+        runtime["use_rule_attributor"] = True
+        runtime["use_rule_evolver"] = True
+        runtime["enable_rule_fast_path"] = False
     if args.llm_benchmark:
         runtime["enable_rule_fast_path"] = False
+    if args.force_evolution_demo:
+        runtime["force_evolution_demo"] = True
+        runtime["use_rule_attributor"] = True
+        runtime["use_rule_evolver"] = True
     if args.sample_size is not None:
         runtime["sample_size"] = None if str(args.sample_size).lower() in {"all", "full", "none"} else int(args.sample_size)
     if args.epochs is not None:
@@ -264,6 +282,65 @@ def run_rule_batch(evaluator, memory_bank, batch_data):
     return evaluate_optimized_batch_items(evaluator, F1PostProcessor(memory_bank), batch_data, predictions, "local_skill_fast_path", enabled=True)
 
 
+def score_rule_dataset(evaluator, memory_bank, dataset):
+    if not dataset:
+        return 0.0
+    results = []
+    for batch_data in chunk_dataset(dataset, batch_size=16):
+        results.extend(run_rule_batch(evaluator, memory_bank, batch_data))
+    return sum(item["eval_result"]["f1_score"] for item in results) / len(dataset)
+
+
+def run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, evolver, golden_dataset):
+    print("[Evolution Demo] Forcing one bad case to demonstrate execute-evaluate-reflect-evolve.")
+    memory_bank.refresh_skills()
+    target = next((item for item in golden_dataset if item["ground_truth"].get("core_intent") != FALSE_AD), golden_dataset[0])
+    wrong_intent = FALSE_AD if target["ground_truth"].get("core_intent") != FALSE_AD else REFUND
+    wrong_prediction = {
+        "core_intent": wrong_intent,
+        "urgency_level": MEDIUM,
+        "entities": [],
+        "summary": "\u6f14\u793a\u7528\u9519\u8bef\u9884\u6d4b",
+    }
+    prediction_text = json.dumps(wrong_prediction, ensure_ascii=False, separators=(",", ":"))
+    bad_eval = evaluator.evaluate(prediction_text, target["ground_truth"])
+    baseline_f1 = (bad_eval["f1_score"] + score_rule_dataset(evaluator, memory_bank, [item for item in golden_dataset if item is not target]) * max(len(golden_dataset) - 1, 0)) / len(golden_dataset)
+    bad_case = {
+        "input": target["input"],
+        "ground_truth": target["ground_truth"],
+        "prediction": prediction_text,
+        "eval_result": bad_eval,
+    }
+    print(f"[Evolution Demo] Bad case F1={bad_eval['f1_score']:.2f}; baseline set F1={baseline_f1:.2f}")
+    patch = attributor.analyze_root_cause(
+        bad_case["eval_result"],
+        bad_case["input"],
+        bad_case["prediction"],
+        bad_case["ground_truth"],
+        use_llm=not bool(config["runtime"].get("use_rule_attributor", False)),
+    )
+    print(f"[Evolution Demo] Attribution: {patch.get('root_cause_analysis')}")
+    print(f"[Evolution Demo] Proposed rule: {patch.get('proposed_rule')}")
+    log_latest_patch(patch)
+    local_score = lambda dataset: score_rule_dataset(evaluator, memory_bank, dataset)
+    new_f1, success = evolver.apply_patch_with_rollback(
+        attributor=attributor,
+        patch_data=patch,
+        config=config,
+        golden_set=golden_dataset,
+        build_prompt_func=build_batch_execution_prompt,
+        baseline_f1=baseline_f1,
+        local_score_func=local_score,
+    )
+    memory_bank.refresh_skills()
+    fixed_prediction = json.dumps(infer_ground_truth(target["input"], memory_bank), ensure_ascii=False, separators=(",", ":"))
+    fixed_eval = evaluator.evaluate(fixed_prediction, target["ground_truth"])
+    stats = llm.snapshot_stats()
+    log_metrics("evolve_demo", new_f1, stats, 0)
+    print(f"[Evolution Demo] Patch success={success}; regression F1={new_f1:.2f}; fixed bad-case F1={fixed_eval['f1_score']:.2f}")
+    print("[Evolution Demo] Skill memory updated: memory/SKILL.md")
+
+
 def run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data, meta_intervention, enable_few_shots, enable_f1_postprocess=True, enable_rule_fast_path=False):
     if enable_rule_fast_path:
         return run_rule_batch(evaluator, memory_bank, batch_data)
@@ -314,6 +391,9 @@ def run_harness_loop(config=None):
     sample_size = None if sample_size in [None, "all", "full"] else int(sample_size)
     golden_dataset = init_real_dataset(sample_size=sample_size, shuffle_seed=runtime.get("shuffle_seed", 2026))
     print(f"[Harness] Mode: {runtime.get('mode', 'demo')} | Dataset size: {len(golden_dataset)}")
+    if bool(runtime.get("force_evolution_demo", False)):
+        run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, evolver, golden_dataset)
+        return
     epochs = int(runtime.get("epochs", 6))
     batch_size = int(runtime.get("batch_size", 8))
     max_workers = int(runtime.get("max_workers", 6))

@@ -25,6 +25,24 @@ Allowed categories: {self.valid_categories}
 Root cause JSON: {analysis_text}
 """
 
+    def _build_rule_skill(self, patch_data):
+        category = patch_data.get("target_category") or self._infer_category(patch_data)
+        if category not in self.valid_categories:
+            category = self.valid_categories[0]
+        title = "auto evolved bad-case correction"
+        trigger = patch_data.get("input_excerpt") or patch_data.get("root_cause_analysis") or "matched local route evidence"
+        action = patch_data.get("proposed_rule") or f"Correct core_intent to {category} and keep compact JSON output."
+        return f"""## [{category}] {title}
+Trigger: {trigger}
+Action: {action}"""
+
+    def _infer_category(self, patch_data):
+        text = json.dumps(patch_data, ensure_ascii=False)
+        for category in self.valid_categories:
+            if category in text:
+                return category
+        return None
+
     def _safe_write_skill_to_md(self, new_skill_text):
         clean_text = new_skill_text.strip()
         pattern = re.compile(r"^##\s*\[?([^\s\]]+)\]?\s+(.*?)\n(.*)", re.DOTALL)
@@ -86,32 +104,36 @@ Root cause JSON: {analysis_text}
             matched = golden_set[:]
         return matched[:limit]
 
-    def apply_patch_with_rollback(self, attributor, patch_data, config, golden_set, build_prompt_func, baseline_f1):
+    def apply_patch_with_rollback(self, attributor, patch_data, config, golden_set, build_prompt_func, baseline_f1, local_score_func=None):
         if not patch_data or not patch_data.get("proposed_rule"):
             print("[Evolver] Invalid patch data; skipping this evolution step.")
             return baseline_f1, False
         print("[Evolver] Generating a compact skill patch...")
-        evolve_prompt = self._build_evolve_prompt(patch_data)
-        new_skill_text = self.llm.generate(evolve_prompt, temperature=0.2, model_type="smart", max_tokens=500)
+        runtime_cfg = config.get("runtime", {})
+        use_rule_evolver = bool(runtime_cfg.get("use_rule_evolver", False))
+        if use_rule_evolver:
+            new_skill_text = self._build_rule_skill(patch_data)
+        else:
+            evolve_prompt = self._build_evolve_prompt(patch_data)
+            new_skill_text = self.llm.generate(evolve_prompt, temperature=0.2, model_type="smart", max_tokens=500)
         if not self._safe_write_skill_to_md(new_skill_text):
             return baseline_f1, False
         with open(self.skill_file, "r", encoding="utf-8") as f:
             updated_skills = f.read()
         evolution_cfg = config.get("evolution", {})
-        runtime_cfg = config.get("runtime", {})
         regression_mode = evolution_cfg.get("regression_mode", "sample_then_full")
         threshold = float(evolution_cfg.get("f1_tolerance", 0.02))
         batch_size = int(runtime_cfg.get("batch_size", 8))
         max_workers = int(runtime_cfg.get("max_workers", 6))
         sample_set = self._sample_regression_set(patch_data, golden_set, limit=int(evolution_cfg.get("sample_size", 10)))
-        sample_f1 = self._score_dataset(sample_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True)
+        sample_f1 = local_score_func(sample_set) if local_score_func else self._score_dataset(sample_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True)
         print(f"[Evolver] Sample regression F1: {sample_f1:.2f}; baseline: {baseline_f1:.2f}")
         if sample_f1 + threshold < baseline_f1:
             if os.path.exists(self.backup_file):
                 shutil.copy(self.backup_file, self.skill_file)
             return baseline_f1, False
         if regression_mode == "full" or abs(sample_f1 - baseline_f1) <= threshold:
-            new_avg_f1 = self._score_dataset(golden_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True)
+            new_avg_f1 = local_score_func(golden_set) if local_score_func else self._score_dataset(golden_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True)
             print(f"[Evolver] Full regression F1: {new_avg_f1:.2f}; baseline: {baseline_f1:.2f}")
             if new_avg_f1 + threshold < baseline_f1:
                 if os.path.exists(self.backup_file):
