@@ -56,6 +56,25 @@ python main_loop.py --mode benchmark --sample-size 1000
 
 Do not commit `.env` or generated runtime/cache files.
 
+## Transfer test runner
+
+Run this to verify that the harness abstraction can transfer to similar tasks without changing the core loop:
+
+```powershell
+python tools/transfer_test_runner.py
+```
+
+The runner covers text complaints, image metadata QA, audio transcript routing, and recommendation event streams through the same `state -> action -> feedback` interface. It writes:
+
+- `memory/transfer_report.json`
+- `memory/transfer_traces.jsonl`
+
+You can also run one suite only:
+
+```powershell
+python tools/transfer_test_runner.py --suite visual_quality
+```
+
 ## Dashboard
 
 ```powershell

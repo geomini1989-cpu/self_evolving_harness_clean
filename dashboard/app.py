@@ -234,6 +234,41 @@ def render_tip_memory(tip_records):
     st.dataframe(df.tail(100), use_container_width=True, hide_index=True)
 
 
+def render_transfer_test(report, transfer_traces):
+    st.subheader("Transfer Test Runner")
+    if not report:
+        st.info("尚未生成 transfer_report.json。运行 python tools/transfer_test_runner.py 后查看迁移验收结果。")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Suite 数", int(report.get("suite_count") or 0))
+    c2.metric("Case 数", int(report.get("case_count") or 0))
+    c3.metric("平均迁移分", f"{float(report.get('avg_score') or 0):.2f}")
+
+    suites = pd.DataFrame(report.get("suites") or [])
+    if not suites.empty:
+        st.plotly_chart(px.bar(suites, x="domain", y="avg_score", color="modality", title="跨领域迁移评分"), use_container_width=True)
+        st.dataframe(suites, use_container_width=True, hide_index=True)
+
+    if transfer_traces:
+        rows = []
+        for record in transfer_traces:
+            state = record.get("state", {}) or {}
+            action = record.get("action", {}) or {}
+            feedback = record.get("feedback", {}) or {}
+            rows.append(
+                {
+                    "domain": state.get("domain"),
+                    "modality": state.get("modality"),
+                    "action": action.get("name"),
+                    "score": feedback.get("score"),
+                    "exact_match": feedback.get("exact_match"),
+                    "errors": len(feedback.get("errors") or []),
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 def render_saf_traces(trace_records):
     st.subheader("State-Action-Feedback 轨迹")
     if not trace_records:
@@ -293,11 +328,13 @@ tokens = read_csv("token_usage.csv")
 versions = read_jsonl("skill_versions.jsonl")
 traces = read_jsonl("saf_traces.jsonl", limit=3000)
 tips = read_jsonl("tips.jsonl", limit=3000)
+transfer_report = read_json("transfer_report.json")
+transfer_traces = read_jsonl("transfer_traces.jsonl", limit=3000)
 skill_text = read_text("SKILL.md")
 latest_patch = read_json("latest_patch.json")
 
-tab_overview, tab_evolution, tab_skill, tab_tip, tab_trace, tab_patch = st.tabs(
-    ["总览", "进化与回滚", "SkillRepo", "双层记忆", "SAF 轨迹", "最新归因"]
+tab_overview, tab_evolution, tab_skill, tab_tip, tab_transfer, tab_trace, tab_patch = st.tabs(
+    ["总览", "进化与回滚", "SkillRepo", "双层记忆", "迁移测试", "SAF 轨迹", "最新归因"]
 )
 
 with tab_overview:
@@ -311,6 +348,9 @@ with tab_skill:
 
 with tab_tip:
     render_tip_memory(tips)
+
+with tab_transfer:
+    render_transfer_test(transfer_report, transfer_traces)
 
 with tab_trace:
     render_saf_traces(traces)

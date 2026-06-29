@@ -10,3 +10,11 @@ memory/token_usage.csv
 memory/metrics.csv
 memory/latest_patch.json
 memory/SKILL_backup.md
+memory/PROMPT_POLICY.md
+memory/PROMPT_POLICY_backup.md
+memory/examples_backup.json
+memory/saf_traces.jsonl
+memory/skill_versions.jsonl
+memory/tips.jsonl
+memory/transfer_report.json
+memory/transfer_traces.jsonl
