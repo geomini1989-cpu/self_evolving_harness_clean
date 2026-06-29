@@ -41,8 +41,10 @@ evolution:
   confidence_threshold: 0.70
   sample_size: 10
   replay_size: 20
+  max_new_skill_chars: 900
+  max_skills_per_category: 5
 
 competition:
   topic: "题目1：算法方向"
   paper_direction: "SkillOS + SkillOpt"
-  method: "冻结基座模型参数，通过技能检索、置信度门控、经验回放、版本回滚和 F1 后处理提升指标，并降低 Token 消耗。"
+  method: "冻结基座模型参数，通过技能检索、置信度门控、经验回放、拒绝编辑缓冲区、SkillRepo 去重淘汰、版本回滚和 F1 后处理提升指标，并降低 Token 消耗。"

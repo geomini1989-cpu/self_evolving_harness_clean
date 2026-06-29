@@ -15,6 +15,7 @@ class SkillEvolver:
         self.backup_file = "memory/SKILL_backup.md"
         self.examples_file = "memory/examples.json"
         self.version_log_file = "memory/skill_versions.jsonl"
+        self.rejected_file = "memory/rejected_skills.jsonl"
         self.valid_categories = ["\u9000\u6b3e\u7ea0\u7eb7", "\u7269\u6d41\u6295\u8bc9", "\u8d26\u53f7\u5c01\u7981", "\u7cfb\u7edfBug", "\u865a\u5047\u5ba3\u4f20"]
 
     def _build_evolve_prompt(self, root_cause_analysis):
@@ -42,6 +43,21 @@ Trigger: {trigger}
 Action: {action}
 Verification: {verification}"""
 
+    def _bounded_skill_text(self, skill_text, config):
+        max_chars = int(config.get("evolution", {}).get("max_new_skill_chars", 900))
+        clean_text = skill_text.strip()
+        if len(clean_text) <= max_chars:
+            return clean_text
+        lines = clean_text.splitlines()
+        kept = []
+        total = 0
+        for line in lines:
+            if total + len(line) + 1 > max_chars:
+                break
+            kept.append(line)
+            total += len(line) + 1
+        return "\n".join(kept).rstrip() + "\nNote: truncated by textual learning-rate budget."
+
     def _infer_category(self, patch_data):
         text = json.dumps(patch_data, ensure_ascii=False)
         for category in self.valid_categories:
@@ -67,6 +83,41 @@ Verification: {verification}"""
             f.write(f"\n\n{clean_text}\n")
         print(f"[Evolver] Added new skill for {category}.")
         return True
+
+    def _skill_hash(self, text):
+        normalized = re.sub(r"\s+", " ", text.strip().lower())
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+    def _is_rejected_before(self, new_skill_text):
+        if not os.path.exists(self.rejected_file):
+            return False
+        target_hash = self._skill_hash(new_skill_text)
+        try:
+            with open(self.rejected_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    record = json.loads(line)
+                    if record.get("skill_hash") == target_hash:
+                        return True
+        except Exception:
+            return False
+        return False
+
+    def _append_rejected_skill(self, reason, skill_text, patch_data, metrics=None):
+        os.makedirs(os.path.dirname(self.rejected_file), exist_ok=True)
+        record = {
+            "ts": int(time.time()),
+            "reason": reason,
+            "skill_hash": self._skill_hash(skill_text),
+            "target_category": patch_data.get("target_category"),
+            "root_cause_type": patch_data.get("root_cause_type"),
+            "confidence": patch_data.get("confidence"),
+            "metrics": metrics or {},
+            "skill_preview": skill_text[:300],
+        }
+        with open(self.rejected_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
 
     def _file_sha256(self, path):
         if not os.path.exists(path):
@@ -197,6 +248,36 @@ Verification: {verification}"""
         if os.path.exists(self.backup_file):
             shutil.copy(self.backup_file, self.skill_file)
 
+    def _curate_skill_repo(self, config):
+        if not os.path.exists(self.skill_file):
+            return
+        max_per_category = int(config.get("evolution", {}).get("max_skills_per_category", 5))
+        with open(self.skill_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        pattern = re.compile(r"(##\s*\[(.*?)\]\s*.*?)(?=\n##|\Z)", re.DOTALL)
+        grouped = {category: [] for category in self.valid_categories}
+        for block, category in pattern.findall(content):
+            category = category.strip()
+            if category not in grouped:
+                continue
+            block = block.strip()
+            block_hash = self._skill_hash(block)
+            if any(existing[0] == block_hash for existing in grouped[category]):
+                continue
+            grouped[category].append((block_hash, block))
+        curated_blocks = []
+        for category in self.valid_categories:
+            curated_blocks.extend(block for _, block in grouped[category][-max_per_category:])
+        if not curated_blocks:
+            return
+        curated = "# Self-Evolving Skill Repository\n\n" + "\n\n".join(curated_blocks).strip() + "\n"
+        if curated.strip() == content.strip():
+            return
+        shutil.copy(self.skill_file, self.backup_file)
+        with open(self.skill_file, "w", encoding="utf-8") as f:
+            f.write(curated)
+        self._append_version_log("curated_skill_repo", {}, {"max_skills_per_category": max_per_category, "skill_count": len(curated_blocks)})
+
     def apply_patch_with_rollback(self, attributor, patch_data, config, golden_set, build_prompt_func, baseline_f1, local_score_func=None):
         if not patch_data or not patch_data.get("proposed_rule"):
             print("[Evolver] Invalid patch data; skipping this evolution step.")
@@ -212,7 +293,13 @@ Verification: {verification}"""
         else:
             evolve_prompt = self._build_evolve_prompt(patch_data)
             new_skill_text = self.llm.generate(evolve_prompt, temperature=0.2, model_type="smart", max_tokens=500)
+        new_skill_text = self._bounded_skill_text(new_skill_text, config)
+        if self._is_rejected_before(new_skill_text):
+            print("[Evolver] Rejected repeated candidate from rejected-edit buffer.")
+            self._append_version_log("rejected_repeated_candidate", patch_data, {})
+            return baseline_f1, False
         if not self._safe_write_skill_to_md(new_skill_text):
+            self._append_rejected_skill("invalid_skill_format", new_skill_text, patch_data)
             return baseline_f1, False
         self._append_version_log("candidate_written", patch_data, {"baseline_f1": baseline_f1})
 
@@ -229,6 +316,7 @@ Verification: {verification}"""
         print(f"[Evolver] Sample regression F1: {sample_f1:.2f}; baseline: {baseline_f1:.2f}")
         if sample_f1 + threshold < baseline_f1:
             self._rollback()
+            self._append_rejected_skill("sample_regression_drop", new_skill_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1})
             self._append_version_log("rolled_back_sample_regression", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1})
             return baseline_f1, False
 
@@ -237,6 +325,7 @@ Verification: {verification}"""
         print(f"[Evolver] Replay regression F1: {replay_f1:.2f}; baseline: {baseline_f1:.2f}; replay_size={len(replay_set)}")
         if replay_f1 + threshold < baseline_f1:
             self._rollback()
+            self._append_rejected_skill("replay_regression_drop", new_skill_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
             self._append_version_log("rolled_back_replay_regression", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
             return baseline_f1, False
 
@@ -245,10 +334,13 @@ Verification: {verification}"""
             print(f"[Evolver] Full regression F1: {new_avg_f1:.2f}; baseline: {baseline_f1:.2f}")
             if new_avg_f1 + threshold < baseline_f1:
                 self._rollback()
+                self._append_rejected_skill("full_regression_drop", new_skill_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})
                 self._append_version_log("rolled_back_full_regression", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})
                 return baseline_f1, False
+            self._curate_skill_repo(config)
             self._append_version_log("accepted_full_regression", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})
             return new_avg_f1, True
 
+        self._curate_skill_repo(config)
         self._append_version_log("accepted_sample_replay", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
         return min(sample_f1, replay_f1), True

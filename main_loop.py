@@ -49,7 +49,7 @@ DEFAULT_RUNTIME = {
     "reset_state": False,
 }
 DEFAULT_CACHE = {"enabled": True, "path": "memory/llm_cache.jsonl"}
-DEFAULT_EVOLUTION = {"regression_mode": "sample_then_full", "f1_tolerance": 0.02, "sample_size": 10}
+DEFAULT_EVOLUTION = {"regression_mode": "sample_then_full", "f1_tolerance": 0.02, "confidence_threshold": 0.7, "sample_size": 10, "replay_size": 20, "max_new_skill_chars": 900, "max_skills_per_category": 5}
 
 
 def deep_merge_defaults(config):
@@ -319,6 +319,7 @@ def run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, e
         bad_case["ground_truth"],
         use_llm=not bool(config["runtime"].get("use_rule_attributor", False)),
     )
+    print(f"[Evolution Demo] Root cause type: {patch.get('root_cause_type')} | confidence={float(patch.get('confidence', 0.0)):.2f} | risk={patch.get('risk_flags')}")
     print(f"[Evolution Demo] Attribution: {patch.get('root_cause_analysis')}")
     print(f"[Evolution Demo] Proposed rule: {patch.get('proposed_rule')}")
     log_latest_patch(patch)
