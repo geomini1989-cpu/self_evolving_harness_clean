@@ -54,6 +54,20 @@ If you want a cheaper benchmark rehearsal before the full run:
 python main_loop.py --mode benchmark --sample-size 1000
 ```
 
+Real-LLM multi-round self-evolution:
+
+```powershell
+python main_loop.py --mode llm-evolve --sample-size 60 --epochs 3
+```
+
+This mode uses the configured API for batch extraction, bad-case attribution, and patch generation. It keeps the token-saving router/cache/tip-memory safeguards, but it does not use the local benchmark fast path.
+
+To force one bad case while still using the real LLM for reflection and patch generation:
+
+```powershell
+python main_loop.py --mode evolve-demo --use-llm-evolution
+```
+
 Do not commit `.env` or generated runtime/cache files.
 
 ## Transfer test runner

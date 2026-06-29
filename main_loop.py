@@ -92,7 +92,7 @@ def load_prompt_policy():
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Self-Evolving Harness runner")
-    parser.add_argument("--mode", choices=["demo", "benchmark", "evolve-demo"], default=None, help="demo: closed-loop run; benchmark: one-pass evaluation; evolve-demo: deterministic evolution showcase")
+    parser.add_argument("--mode", choices=["demo", "benchmark", "evolve-demo", "llm-evolve"], default=None, help="demo: closed-loop run; benchmark: one-pass evaluation; evolve-demo: deterministic evolution showcase; llm-evolve: real LLM multi-round evolution")
     parser.add_argument("--sample-size", default=None, help="Number of rows to evaluate, or 'all' for the full dataset")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
@@ -100,6 +100,7 @@ def parse_args():
     parser.add_argument("--no-evolution", action="store_true", help="Skip attribution/evolution after bad cases")
     parser.add_argument("--llm-benchmark", action="store_true", help="Use the real model in benchmark mode instead of local skill execution")
     parser.add_argument("--force-evolution-demo", action="store_true", help="Force one bad-case attribution and skill evolution step")
+    parser.add_argument("--use-llm-evolution", action="store_true", help="Use real LLM attribution and rule generation instead of local rule evolution helpers")
     return parser.parse_args()
 
 
@@ -125,12 +126,26 @@ def apply_cli_overrides(config, args):
         runtime["use_rule_attributor"] = True
         runtime["use_rule_evolver"] = True
         runtime["enable_rule_fast_path"] = False
+    if runtime.get("mode") == "llm-evolve":
+        runtime["sample_size"] = int(runtime.get("sample_size") or 60)
+        runtime["epochs"] = int(runtime.get("epochs") or 3)
+        runtime["batch_size"] = min(int(runtime.get("batch_size", 8)), 8)
+        runtime["max_workers"] = min(int(runtime.get("max_workers", 6)), 2)
+        runtime["enable_evolution"] = True
+        runtime["force_evolution_demo"] = False
+        runtime["use_rule_attributor"] = False
+        runtime["use_rule_evolver"] = False
+        runtime["enable_rule_fast_path"] = False
     if args.llm_benchmark:
         runtime["enable_rule_fast_path"] = False
     if args.force_evolution_demo:
         runtime["force_evolution_demo"] = True
         runtime["use_rule_attributor"] = True
         runtime["use_rule_evolver"] = True
+    if args.use_llm_evolution:
+        runtime["use_rule_attributor"] = False
+        runtime["use_rule_evolver"] = False
+        runtime["enable_rule_fast_path"] = False
     if args.sample_size is not None:
         runtime["sample_size"] = None if str(args.sample_size).lower() in {"all", "full", "none"} else int(args.sample_size)
     if args.epochs is not None:
@@ -448,6 +463,14 @@ def run_harness_loop(config=None):
     print(f"[Harness] Batch size: {batch_size} | Estimated model batches per epoch: {estimated_batches} | Epochs: {epochs}")
     if enable_rule_fast_path:
         print("[Harness] Benchmark fast path: local skill execution is enabled; LLM calls should stay near zero.")
+    else:
+        print("[Harness] Execution backend: LLM batch extraction.")
+        if getattr(llm, "offline_mode", False):
+            print("[Harness] API_KEY is missing or not loaded; LLM calls will use offline demo mode.")
+    if enable_evolution:
+        attribution_backend = "rule" if bool(runtime.get("use_rule_attributor", False)) else "LLM"
+        evolver_backend = "rule" if bool(runtime.get("use_rule_evolver", False)) else "LLM"
+        print(f"[Harness] Evolution backend: attribution={attribution_backend}, patch_generation={evolver_backend}.")
     stuck_counter = 0
     for epoch in range(1, epochs + 1):
         epoch_started = time.time()
@@ -497,7 +520,13 @@ def run_harness_loop(config=None):
             break
         if bad_case and enable_evolution:
             print("[Harness] Found a bad case; starting adaptive patch flow.")
-            patch = attributor.analyze_root_cause(bad_case["eval_result"], bad_case["input"], bad_case["prediction"], bad_case["ground_truth"])
+            patch = attributor.analyze_root_cause(
+                bad_case["eval_result"],
+                bad_case["input"],
+                bad_case["prediction"],
+                bad_case["ground_truth"],
+                use_llm=not bool(runtime.get("use_rule_attributor", False)),
+            )
             log_latest_patch(patch)
             baseline_f1 = avg_f1
             new_f1, success = evolver.apply_patch_with_rollback(attributor=attributor, patch_data=patch, config=config, golden_set=golden_dataset, build_prompt_func=build_batch_execution_prompt, baseline_f1=baseline_f1)
