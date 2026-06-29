@@ -61,6 +61,8 @@ python main_loop.py --mode llm-evolve --sample-size 60 --epochs 3
 ```
 
 This mode uses the configured API for batch extraction, bad-case attribution, and patch generation. It keeps the token-saving router/cache/tip-memory safeguards, but it does not use the local benchmark fast path.
+For safety, this mode uses stricter memory promotion than the cheap demo path: a new tip usually needs repeated evidence, or confidence at least 0.95, before it writes long-term Prompt/Skill/Few-shot memory.
+Non-schema bad cases use a few-shot-first policy: the harness tries to add a low-risk example to `memory/examples.json` before changing global Prompt or Skill memory.
 
 Fresh 100-sample evolution demo from empty runtime memory:
 

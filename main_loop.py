@@ -133,10 +133,16 @@ def apply_cli_overrides(config, args):
         runtime["batch_size"] = min(int(runtime.get("batch_size", 8)), 8)
         runtime["max_workers"] = min(int(runtime.get("max_workers", 6)), 2)
         runtime["enable_evolution"] = True
+        runtime["enable_few_shots"] = True
         runtime["force_evolution_demo"] = False
         runtime["use_rule_attributor"] = False
         runtime["use_rule_evolver"] = False
         runtime["enable_rule_fast_path"] = False
+        config["evolution"]["tip_promotion_threshold"] = max(int(config["evolution"].get("tip_promotion_threshold", 2)), 2)
+        config["evolution"]["tip_immediate_confidence"] = max(float(config["evolution"].get("tip_immediate_confidence", 0.85)), 1.01)
+        config["evolution"]["confidence_threshold"] = max(float(config["evolution"].get("confidence_threshold", 0.7)), 0.75)
+        config["evolution"]["prefer_few_shot_first"] = True
+        config["evolution"]["allow_immediate_few_shot"] = True
     if args.llm_benchmark:
         runtime["enable_rule_fast_path"] = False
     if args.force_evolution_demo:
@@ -363,7 +369,7 @@ def score_rule_dataset(evaluator, memory_bank, dataset):
 
 def run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, evolver, golden_dataset, domain_adapter):
     print("[Evolution Demo] Forcing one bad case to demonstrate execute-evaluate-reflect-evolve.")
-    memory_bank.refresh_skills()
+    memory_bank.refresh_memory()
     target = next((item for item in golden_dataset if item["ground_truth"].get("core_intent") != FALSE_AD), golden_dataset[0])
     wrong_intent = FALSE_AD if target["ground_truth"].get("core_intent") != FALSE_AD else REFUND
     wrong_prediction = {
@@ -546,9 +552,19 @@ def run_harness_loop(config=None):
                 bad_case["ground_truth"],
                 use_llm=not bool(runtime.get("use_rule_attributor", False)),
             )
+            if bool(config.get("evolution", {}).get("prefer_few_shot_first", False)):
+                root_type = patch.get("root_cause_type")
+                if root_type not in {"json_format_error", "schema_field_error"}:
+                    patch["evolution_action"] = "few_shot_patch"
+                    patch.setdefault("risk_flags", [])
+                    if "few_shot_first_policy" not in patch["risk_flags"]:
+                        patch["risk_flags"].append("few_shot_first_policy")
+                    print("[Harness] Few-shot-first policy: using a low-risk example patch for this bad case.")
             log_latest_patch(patch)
             baseline_f1 = avg_f1
             new_f1, success = evolver.apply_patch_with_rollback(attributor=attributor, patch_data=patch, config=config, golden_set=golden_dataset, build_prompt_func=build_batch_execution_prompt, baseline_f1=baseline_f1)
+            if success:
+                memory_bank.refresh_memory()
             stuck_counter = stuck_counter + 1 if (not success or new_f1 <= baseline_f1) else 0
         elif bad_case:
             print("[Harness] Bad case found, but evolution is disabled for this run.")

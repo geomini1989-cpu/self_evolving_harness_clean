@@ -227,7 +227,7 @@ Output contract: Return compact JSON only and preserve the required schema exact
         for i in range(0, len(dataset), batch_size):
             yield dataset[i:i + batch_size]
 
-    def _score_dataset(self, dataset, config, build_prompt_func, skills, batch_size=8, max_workers=6, use_cache=True):
+    def _score_dataset(self, dataset, config, build_prompt_func, skills, batch_size=8, max_workers=6, use_cache=True, few_shots=""):
         if not dataset:
             return 0.0
         total_f1 = 0.0
@@ -235,7 +235,7 @@ Output contract: Return compact JSON only and preserve the required schema exact
             future_to_batch = {}
             for batch_data in self._chunk_dataset(dataset, batch_size):
                 batch_inputs = [data["input"] for data in batch_data]
-                prompt = build_prompt_func(config, skills, few_shots="", batch_texts=batch_inputs, meta_intervention=False)
+                prompt = build_prompt_func(config, skills, few_shots=few_shots, batch_texts=batch_inputs, meta_intervention=False)
                 future = executor.submit(self.llm.generate, prompt, temperature=0.0, model_type="default", use_cache=use_cache, max_tokens=max(500, 220 * len(batch_inputs)))
                 future_to_batch[future] = batch_data
             for future in concurrent.futures.as_completed(future_to_batch):
@@ -280,6 +280,23 @@ Output contract: Return compact JSON only and preserve the required schema exact
                 replay.append({"input": item.get("input", ""), "ground_truth": output})
         return replay
 
+    def _load_few_shot_prompt(self, limit=1, max_chars=1000):
+        if not os.path.exists(self.examples_file):
+            return ""
+        try:
+            with open(self.examples_file, "r", encoding="utf-8") as f:
+                examples = json.load(f)
+        except Exception:
+            return ""
+        lines = ["Reference successful cases:"]
+        for idx, item in enumerate(examples[-limit:], 1):
+            output = json.dumps(item.get("output", {}), ensure_ascii=False, separators=(",", ":"))
+            lines.append(f"{idx}. input={item.get('input', '')}\noutput={output}")
+        prompt = "\n".join(lines)
+        if len(prompt) > max_chars:
+            prompt = prompt[:max_chars].rstrip() + "\n[truncated]"
+        return prompt
+
     def _balanced_category_replay(self, golden_set, per_category=2):
         selected = []
         counts = {category: 0 for category in self.valid_categories}
@@ -316,7 +333,30 @@ Output contract: Return compact JSON only and preserve the required schema exact
         elif os.path.exists(self.skill_file):
             os.remove(self.skill_file)
 
-    def _rollback_artifact(self, action):
+    def _artifact_path(self, action):
+        if action == "prompt_patch":
+            return self.prompt_policy_file
+        if action == "few_shot_patch":
+            return self.examples_file
+        return self.skill_file
+
+    def _snapshot_artifact(self, action):
+        path = self._artifact_path(action)
+        if not os.path.exists(path):
+            return {"path": path, "exists": False, "content": ""}
+        return {"path": path, "exists": True, "content": self._read_text_file(path)}
+
+    def _rollback_artifact(self, action, snapshot=None):
+        if snapshot:
+            path = snapshot["path"]
+            if snapshot["exists"]:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(snapshot["content"])
+            elif os.path.exists(path):
+                os.remove(path)
+            print(f"[Evolver] Rolled back {action}; restored previous artifact state.")
+            return
         if action == "prompt_patch":
             if os.path.exists(self.prompt_policy_backup_file):
                 shutil.copy(self.prompt_policy_backup_file, self.prompt_policy_file)
@@ -401,12 +441,18 @@ Output contract: Return compact JSON only and preserve the required schema exact
                 print(f"[Evolver] Tip {tip.get('tip_id')} is already promoted; skipping duplicate long-term write.")
                 self._append_version_log("tip_already_promoted", patch_data, {"tip_count": tip.get("count")})
                 return baseline_f1, False
-            if not self.tip_memory.should_promote(tip, config):
-                print(f"[Evolver] Buffered transient tip {tip.get('tip_id')} ({tip.get('count')} hit); waiting for repeat or higher confidence.")
-                self._append_version_log("tip_buffered", patch_data, {"promotion_threshold": int(evolution_cfg.get("tip_promotion_threshold", 2))})
-                return baseline_f1, False
-            print(f"[Evolver] Promoting tip {tip.get('tip_id')} from short-term memory ({tip.get('count')} hit).")
-            self._append_version_log("tip_promoted", patch_data, {"tip_count": tip.get("count")})
+            tip_promoted_by_policy = self.tip_memory.should_promote(tip, config)
+            if not tip_promoted_by_policy:
+                if action == "few_shot_patch" and bool(evolution_cfg.get("allow_immediate_few_shot", False)):
+                    print(f"[Evolver] Trying low-risk few-shot patch from buffered tip {tip.get('tip_id')} ({tip.get('count')} hit).")
+                    self._append_version_log("tip_try_few_shot", patch_data, {"tip_count": tip.get("count")})
+                else:
+                    print(f"[Evolver] Buffered transient tip {tip.get('tip_id')} ({tip.get('count')} hit); waiting for repeat or higher confidence.")
+                    self._append_version_log("tip_buffered", patch_data, {"promotion_threshold": int(evolution_cfg.get("tip_promotion_threshold", 2))})
+                    return baseline_f1, False
+            else:
+                print(f"[Evolver] Promoting tip {tip.get('tip_id')} from short-term memory ({tip.get('count')} hit).")
+                self._append_version_log("tip_promoted", patch_data, {"tip_count": tip.get("count")})
 
         print(f"[Evolver] Generating a compact {action}...")
         runtime_cfg = config.get("runtime", {})
@@ -416,6 +462,7 @@ Output contract: Return compact JSON only and preserve the required schema exact
             print("[Evolver] Rejected repeated candidate from rejected-edit buffer.")
             self._append_version_log("rejected_repeated_candidate", patch_data, {})
             return baseline_f1, False
+        artifact_snapshot = self._snapshot_artifact(action)
         written = self._write_action_artifact(action, artifact_text)
         if not written:
             self._append_rejected_skill("invalid_action_artifact", artifact_text, patch_data)
@@ -429,12 +476,14 @@ Output contract: Return compact JSON only and preserve the required schema exact
         threshold = float(evolution_cfg.get("f1_tolerance", 0.02))
         batch_size = int(runtime_cfg.get("batch_size", 8))
         max_workers = int(runtime_cfg.get("max_workers", 6))
+        regression_few_shots = self._load_few_shot_prompt(limit=1) if action == "few_shot_patch" else ""
 
         sample_set = self._sample_regression_set(patch_data, golden_set, limit=int(evolution_cfg.get("sample_size", 10)))
-        sample_f1 = local_score_func(sample_set) if local_score_func else self._score_dataset(sample_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True)
+        sample_f1 = local_score_func(sample_set) if local_score_func else self._score_dataset(sample_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True, few_shots=regression_few_shots)
         print(f"[Evolver] Sample regression F1: {sample_f1:.2f}; baseline: {baseline_f1:.2f}")
         if sample_f1 + threshold < baseline_f1:
-            self._rollback_artifact(action)
+            print(f"[Evolver] Rolling back {action}: sample regression drop {sample_f1:.2f} < {baseline_f1:.2f} - tolerance {threshold:.2f}.")
+            self._rollback_artifact(action, artifact_snapshot)
             self._append_rejected_skill("sample_regression_drop", artifact_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1})
             if patch_data.get("tip_id"):
                 self.tip_memory.mark_rejected(patch_data["tip_id"], "sample_regression_drop", {"baseline_f1": baseline_f1, "sample_f1": sample_f1})
@@ -442,10 +491,11 @@ Output contract: Return compact JSON only and preserve the required schema exact
             return baseline_f1, False
 
         replay_set = self._build_replay_set(patch_data, golden_set, sample_set, config)
-        replay_f1 = local_score_func(replay_set) if local_score_func else self._score_dataset(replay_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True)
+        replay_f1 = local_score_func(replay_set) if local_score_func else self._score_dataset(replay_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True, few_shots=regression_few_shots)
         print(f"[Evolver] Replay regression F1: {replay_f1:.2f}; baseline: {baseline_f1:.2f}; replay_size={len(replay_set)}")
         if replay_f1 + threshold < baseline_f1:
-            self._rollback_artifact(action)
+            print(f"[Evolver] Rolling back {action}: replay regression drop {replay_f1:.2f} < {baseline_f1:.2f} - tolerance {threshold:.2f}.")
+            self._rollback_artifact(action, artifact_snapshot)
             self._append_rejected_skill("replay_regression_drop", artifact_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
             if patch_data.get("tip_id"):
                 self.tip_memory.mark_rejected(patch_data["tip_id"], "replay_regression_drop", {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
@@ -453,10 +503,11 @@ Output contract: Return compact JSON only and preserve the required schema exact
             return baseline_f1, False
 
         if regression_mode == "full" or abs(sample_f1 - baseline_f1) <= threshold or abs(replay_f1 - baseline_f1) <= threshold:
-            new_avg_f1 = local_score_func(golden_set) if local_score_func else self._score_dataset(golden_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True)
+            new_avg_f1 = local_score_func(golden_set) if local_score_func else self._score_dataset(golden_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True, few_shots=regression_few_shots)
             print(f"[Evolver] Full regression F1: {new_avg_f1:.2f}; baseline: {baseline_f1:.2f}")
             if new_avg_f1 + threshold < baseline_f1:
-                self._rollback_artifact(action)
+                print(f"[Evolver] Rolling back {action}: full regression drop {new_avg_f1:.2f} < {baseline_f1:.2f} - tolerance {threshold:.2f}.")
+                self._rollback_artifact(action, artifact_snapshot)
                 self._append_rejected_skill("full_regression_drop", artifact_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})
                 if patch_data.get("tip_id"):
                     self.tip_memory.mark_rejected(patch_data["tip_id"], "full_regression_drop", {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})

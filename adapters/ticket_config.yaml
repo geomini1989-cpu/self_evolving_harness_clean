@@ -46,6 +46,8 @@ evolution:
   enable_tip_memory: true
   tip_promotion_threshold: 2
   tip_immediate_confidence: 0.85
+  prefer_few_shot_first: true
+  allow_immediate_few_shot: true
 
 competition:
   topic: "题目1：算法方向"

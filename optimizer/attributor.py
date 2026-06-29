@@ -100,7 +100,15 @@ Required JSON shape:
         if not isinstance(affected_fields, list):
             affected_fields = [str(affected_fields)]
         patch_data["root_cause_type"] = root_cause_type
-        patch_data["evolution_action"] = patch_data.get("evolution_action") or self._select_evolution_action(root_cause_type, affected_fields)
+        selected_action = self._select_evolution_action(root_cause_type, affected_fields)
+        requested_action = patch_data.get("evolution_action") or selected_action
+        if requested_action == "prompt_patch" and root_cause_type not in {"json_format_error", "schema_field_error"}:
+            requested_action = selected_action
+            risk_flags = patch_data.get("risk_flags") if isinstance(patch_data.get("risk_flags"), list) else []
+            if "llm_action_overridden" not in risk_flags:
+                risk_flags.append("llm_action_overridden")
+            patch_data["risk_flags"] = risk_flags
+        patch_data["evolution_action"] = requested_action
         patch_data["target_category"] = patch_data.get("target_category") or ground_truth.get("core_intent")
         patch_data["confidence"] = float(patch_data.get("confidence") or self._confidence(root_cause_type, eval_result))
         patch_data["affected_fields"] = affected_fields

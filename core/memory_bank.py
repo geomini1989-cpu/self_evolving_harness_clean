@@ -78,6 +78,10 @@ class MemoryBank:
         self.skills_db = {}
         self._parse_skills_from_md()
 
+    def refresh_memory(self):
+        self._load_few_shots()
+        self.refresh_skills()
+
     def route_categories(self, texts, max_categories=3):
         scores = self.score_categories(texts)
         return [category for category, _ in scores[:max_categories]]
