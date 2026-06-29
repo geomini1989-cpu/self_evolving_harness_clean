@@ -10,7 +10,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 MEMORY_DIR = ROOT / "memory"
 
-st.set_page_config(layout="wide", page_title="Self-Evolving Harness")
+st.set_page_config(layout="wide", page_title="自进化智能体评测与优化平台")
 
 
 THEME_COLORS = {
@@ -34,23 +34,40 @@ st.markdown(
         box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
     }
     .hero-band {
-        border: 1px solid #dbe3ef;
+        border: 1px solid #cbd8ea;
         border-radius: 8px;
-        padding: 18px 20px;
-        background: linear-gradient(90deg, #f8fafc 0%, #eef6ff 52%, #f7f3e8 100%);
-        margin-bottom: 14px;
+        padding: 20px 24px;
+        background:
+            linear-gradient(90deg, rgba(255,255,255,0.95) 0%, rgba(241,247,255,0.96) 58%, rgba(246,248,241,0.96) 100%);
+        margin-bottom: 16px;
     }
     .hero-title {
-        font-size: 30px;
+        font-size: 32px;
         line-height: 1.15;
-        font-weight: 760;
+        font-weight: 780;
         color: #0f172a;
-        margin-bottom: 6px;
+        margin-bottom: 8px;
     }
     .hero-subtitle {
-        color: #475569;
+        color: #334155;
         font-size: 15px;
-        max-width: 980px;
+        max-width: 1080px;
+        line-height: 1.7;
+    }
+    .hero-tags {
+        margin-top: 12px;
+    }
+    .hero-tag {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 4px 10px;
+        margin-right: 8px;
+        margin-bottom: 4px;
+        background: #ffffff;
+        border: 1px solid #d7dee9;
+        color: #334155;
+        font-size: 12px;
+        font-weight: 600;
     }
     .section-note {
         color: #64748b;
@@ -216,9 +233,16 @@ def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_t
     st.markdown(
         """
         <div class="hero-band">
-            <div class="hero-title">Self-Evolving Harness 演示驾驶舱</div>
+            <div class="hero-title">自进化智能体评测与优化平台</div>
             <div class="hero-subtitle">
-            面向题目一算法方向：冻结基座模型，通过执行、评估、反思、进化、回归门控和双层记忆，在低 Token 成本下完成批处理与安全自进化。
+            面向题目一算法方向：冻结基座模型参数，通过批量执行、自动评估、根因反思、低风险进化和回归门控，验证 Agent 在低 Token 成本下的持续优化能力。
+            </div>
+            <div class="hero-tags">
+                <span class="hero-tag">SkillOS 技能记忆</span>
+                <span class="hero-tag">SkillOpt 策略优化</span>
+                <span class="hero-tag">Self-Harness 闭环进化</span>
+                <span class="hero-tag">Few-shot 轻量晋升</span>
+                <span class="hero-tag">防退化回滚</span>
             </div>
         </div>
         """,
@@ -511,7 +535,7 @@ examples = read_json("examples.json", default=[])
 latest_patch = read_json("latest_patch.json")
 
 tab_demo, tab_evolution, tab_memory, tab_transfer, tab_trace, tab_patch = st.tabs(
-    ["演示总览", "进化与回滚", "记忆资产", "迁移测试", "SAF 轨迹", "最新归因"]
+    ["总览", "自进化闭环", "记忆资产", "迁移验证", "执行轨迹", "归因详情"]
 )
 
 with tab_demo:
