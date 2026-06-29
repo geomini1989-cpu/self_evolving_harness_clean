@@ -79,6 +79,13 @@ def path(name):
     return MEMORY_DIR / name
 
 
+def coerce_numeric_column(series):
+    converted = pd.to_numeric(series, errors="coerce")
+    if converted.notna().sum() == 0 and series.notna().sum() > 0:
+        return series
+    return converted
+
+
 @st.cache_data(ttl=3)
 def read_csv(name):
     file_path = path(name)
@@ -89,7 +96,7 @@ def read_csv(name):
         df = df[df["ts"] != "ts"]
     for col in df.columns:
         if col not in {"epoch", "model_type", "model"}:
-            df[col] = pd.to_numeric(df[col], errors="ignore")
+            df[col] = coerce_numeric_column(df[col])
     return df
 
 
