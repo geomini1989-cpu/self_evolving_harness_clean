@@ -1,5 +1,4 @@
 import json
-import os
 import re
 from pathlib import Path
 
@@ -11,8 +10,69 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 MEMORY_DIR = ROOT / "memory"
 
+st.set_page_config(layout="wide", page_title="Self-Evolving Harness")
 
-st.set_page_config(layout="wide", page_title="Self-Evolving Harness Dashboard")
+
+THEME_COLORS = {
+    "accepted": "#16875d",
+    "rolled_back": "#c2410c",
+    "buffered": "#9a6a00",
+    "neutral": "#475569",
+}
+
+
+st.markdown(
+    """
+    <style>
+    .block-container { padding-top: 1.4rem; padding-bottom: 2rem; }
+    h1, h2, h3 { letter-spacing: 0; }
+    div[data-testid="stMetric"] {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 12px 14px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+    .hero-band {
+        border: 1px solid #dbe3ef;
+        border-radius: 8px;
+        padding: 18px 20px;
+        background: linear-gradient(90deg, #f8fafc 0%, #eef6ff 52%, #f7f3e8 100%);
+        margin-bottom: 14px;
+    }
+    .hero-title {
+        font-size: 30px;
+        line-height: 1.15;
+        font-weight: 760;
+        color: #0f172a;
+        margin-bottom: 6px;
+    }
+    .hero-subtitle {
+        color: #475569;
+        font-size: 15px;
+        max-width: 980px;
+    }
+    .section-note {
+        color: #64748b;
+        font-size: 13px;
+        margin-top: -6px;
+        margin-bottom: 10px;
+    }
+    .status-pill {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 12px;
+        border: 1px solid #cbd5e1;
+        color: #334155;
+        background: #f8fafc;
+        margin-right: 6px;
+        margin-bottom: 6px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def path(name):
@@ -52,12 +112,15 @@ def read_jsonl(name, limit=5000):
 
 
 @st.cache_data(ttl=3)
-def read_json(name):
+def read_json(name, default=None):
     file_path = path(name)
     if not file_path.exists():
-        return {}
-    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-        return json.load(f)
+        return {} if default is None else default
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        return {} if default is None else default
 
 
 @st.cache_data(ttl=3)
@@ -96,46 +159,123 @@ def metric_value(df, column, default=0):
         return default
 
 
-def render_overview(metrics_df, token_df):
-    st.subheader("运行总览")
+def event_summary(version_records):
+    events = [record.get("event") for record in version_records]
+    accepted = sum(1 for event in events if str(event).startswith("accepted"))
+    rolled_back = sum(1 for event in events if "rolled_back" in str(event))
+    candidates = sum(1 for event in events if event == "candidate_written")
+    return accepted, rolled_back, candidates
+
+
+def artifact_summary(skill_text, prompt_policy, examples, tips, rejected):
+    skill_count = len(parse_skill_blocks(skill_text))
+    example_count = len(examples) if isinstance(examples, list) else 0
+    promoted_tips = sum(1 for tip in tips if tip.get("status") == "promoted")
+    buffered_tips = sum(1 for tip in tips if tip.get("status") == "buffered")
+    return {
+        "Skill": skill_count,
+        "Few-shot": example_count,
+        "Prompt Policy": 1 if prompt_policy.strip() else 0,
+        "Promoted Tips": promoted_tips,
+        "Buffered Tips": buffered_tips,
+        "Rejected": len(rejected),
+    }
+
+
+def render_status_pills(summary):
+    labels = []
+    for name, value in summary.items():
+        labels.append(f'<span class="status-pill">{name}: {value}</span>')
+    st.markdown("".join(labels), unsafe_allow_html=True)
+
+
+def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_text, prompt_policy, examples, transfer_report):
+    st.markdown(
+        """
+        <div class="hero-band">
+            <div class="hero-title">Self-Evolving Harness 演示驾驶舱</div>
+            <div class="hero-subtitle">
+            面向题目一算法方向：冻结基座模型，通过执行、评估、反思、进化、回归门控和双层记忆，在低 Token 成本下完成批处理与安全自进化。
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     latest_f1 = metric_value(metrics_df, "f1_score")
     latest_calls = metric_value(metrics_df, "llm_calls")
     latest_tokens = metric_value(metrics_df, "total_tokens")
     latest_elapsed = metric_value(metrics_df, "elapsed_ms")
     cache_hits = metric_value(metrics_df, "cache_hits")
+    accepted, rolled_back, candidates = event_summary(versions)
+    transfer_score = float(transfer_report.get("avg_score") or 0.0) if transfer_report else 0.0
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("最新 F1", f"{latest_f1:.2f}")
     c2.metric("LLM 调用", f"{int(latest_calls)}")
     c3.metric("Token", f"{int(latest_tokens)}")
     c4.metric("缓存命中", f"{int(cache_hits)}")
     c5.metric("耗时 ms", f"{int(latest_elapsed)}")
+    c6.metric("迁移分", f"{transfer_score:.2f}")
 
-    if not metrics_df.empty:
-        chart_df = metrics_df.copy()
-        chart_df["run_index"] = range(1, len(chart_df) + 1)
-        st.plotly_chart(
-            px.line(chart_df, x="run_index", y="f1_score", markers=True, title="F1 迭代曲线"),
-            use_container_width=True,
-        )
-        cost_cols = [col for col in ["llm_calls", "cache_hits", "total_tokens", "elapsed_ms"] if col in chart_df.columns]
-        if cost_cols:
-            st.plotly_chart(
-                px.line(chart_df, x="run_index", y=cost_cols, markers=True, title="调用、缓存、Token 与延迟"),
-                use_container_width=True,
+    artifact_counts = artifact_summary(skill_text, prompt_policy, examples, tips, rejected)
+    render_status_pills(
+        {
+            "候选补丁": candidates,
+            "已接受": accepted,
+            "已回滚": rolled_back,
+            **artifact_counts,
+        }
+    )
+
+    left, right = st.columns([1.25, 1])
+    with left:
+        if not metrics_df.empty:
+            chart_df = metrics_df.copy()
+            chart_df["run_index"] = range(1, len(chart_df) + 1)
+            fig = px.line(
+                chart_df,
+                x="run_index",
+                y="f1_score",
+                markers=True,
+                title="F1 演化曲线",
+                color_discrete_sequence=["#2563eb"],
             )
-    else:
-        st.info("尚未生成 metrics.csv。先运行 main_loop.py 后刷新。")
+            fig.update_layout(height=330, margin=dict(l=12, r=12, t=48, b=12))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("尚未生成 metrics.csv")
+    with right:
+        if versions:
+            rows = pd.DataFrame({"event": [record.get("event") for record in versions]})
+            counts = rows["event"].value_counts().reset_index()
+            counts.columns = ["event", "count"]
+            fig = px.bar(
+                counts.head(12),
+                x="count",
+                y="event",
+                orientation="h",
+                title="进化事件分布",
+                color="event",
+                color_discrete_sequence=px.colors.qualitative.Set2,
+            )
+            fig.update_layout(height=330, showlegend=False, margin=dict(l=12, r=12, t=48, b=12))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("尚未生成 skill_versions.jsonl")
 
     if not token_df.empty and {"model_type", "total_tokens"}.issubset(token_df.columns):
         grouped = token_df.groupby("model_type", dropna=False)["total_tokens"].sum().reset_index()
-        st.plotly_chart(px.bar(grouped, x="model_type", y="total_tokens", title="按模型类型统计 Token"), use_container_width=True)
+        fig = px.bar(grouped, x="model_type", y="total_tokens", title="Token 消耗按模型类型统计", color="model_type")
+        fig.update_layout(height=280, showlegend=False, margin=dict(l=12, r=12, t=48, b=12))
+        st.plotly_chart(fig, use_container_width=True)
 
 
 def render_evolution(version_records):
-    st.subheader("进化版本与防退化门控")
+    st.subheader("进化与防退化")
+    st.markdown('<div class="section-note">候选补丁写入后必须经过 sample、replay、full 回归门控，失败会恢复写入前状态。</div>', unsafe_allow_html=True)
     if not version_records:
-        st.info("尚未生成 skill_versions.jsonl。运行 evolve-demo 后会出现版本轨迹。")
+        st.info("尚未生成进化记录")
         return
 
     rows = []
@@ -145,99 +285,107 @@ def render_evolution(version_records):
             {
                 "ts": record.get("ts"),
                 "event": record.get("event"),
-                "evolution_action": record.get("evolution_action"),
+                "action": record.get("evolution_action"),
                 "target_category": record.get("target_category"),
-                "root_cause_type": record.get("root_cause_type"),
+                "root_cause": record.get("root_cause_type"),
                 "confidence": record.get("confidence"),
+                "tip_id": record.get("tip_id"),
                 "baseline_f1": metrics.get("baseline_f1"),
                 "sample_f1": metrics.get("sample_f1"),
                 "replay_f1": metrics.get("replay_f1"),
                 "full_f1": metrics.get("full_f1"),
-                "skill_count": metrics.get("skill_count"),
             }
         )
     df = pd.DataFrame(rows)
-    st.dataframe(df.tail(50), use_container_width=True, hide_index=True)
 
-    event_counts = df["event"].value_counts().reset_index()
-    event_counts.columns = ["event", "count"]
-    st.plotly_chart(px.bar(event_counts, x="event", y="count", title="版本事件分布"), use_container_width=True)
+    c1, c2, c3 = st.columns(3)
+    accepted, rolled_back, candidates = event_summary(version_records)
+    c1.metric("候选补丁", candidates)
+    c2.metric("接受补丁", accepted)
+    c3.metric("回滚补丁", rolled_back)
 
     f1_cols = [col for col in ["baseline_f1", "sample_f1", "replay_f1", "full_f1"] if col in df.columns]
     f1_df = df[f1_cols].dropna(how="all")
     if not f1_df.empty:
         f1_df = f1_df.reset_index(names="step")
-        st.plotly_chart(px.line(f1_df, x="step", y=f1_cols, markers=True, title="三闸门验证结果"), use_container_width=True)
+        fig = px.line(f1_df, x="step", y=f1_cols, markers=True, title="回归门控结果")
+        fig.update_layout(height=330, margin=dict(l=12, r=12, t=48, b=12))
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.dataframe(df.tail(80), use_container_width=True, hide_index=True)
 
 
-def render_skill_repo(skill_text):
-    st.subheader("SkillRepo 状态")
+def render_memory(skill_text, prompt_policy, examples, tips, rejected):
+    st.subheader("记忆资产")
     skill_df = parse_skill_blocks(skill_text)
-    if skill_df.empty:
-        st.info("尚未生成结构化 Skill。")
-        return
+    example_count = len(examples) if isinstance(examples, list) else 0
+    prompt_count = 1 if prompt_policy.strip() else 0
+    promoted = sum(1 for tip in tips if tip.get("status") == "promoted")
+    buffered = sum(1 for tip in tips if tip.get("status") == "buffered")
 
-    total_chars = int(skill_df["chars"].sum())
-    total_tokens = int(skill_df["approx_tokens"].sum())
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Skill 数量", len(skill_df))
-    c2.metric("字符数", total_chars)
-    c3.metric("估算 Token", total_tokens)
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Skill", len(skill_df))
+    c2.metric("Few-shot", example_count)
+    c3.metric("Prompt Policy", prompt_count)
+    c4.metric("Promoted Tip", promoted)
+    c5.metric("Rejected", len(rejected))
 
-    counts = skill_df.groupby("category").size().reset_index(name="count")
-    st.plotly_chart(px.bar(counts, x="category", y="count", title="按类别统计 Skill 数"), use_container_width=True)
-    st.dataframe(skill_df[["category", "title", "chars", "approx_tokens"]], use_container_width=True, hide_index=True)
+    left, right = st.columns(2)
+    with left:
+        st.write("SkillRepo")
+        if skill_df.empty:
+            st.info("暂无已接受 Skill")
+        else:
+            counts = skill_df.groupby("category").size().reset_index(name="count")
+            st.plotly_chart(px.bar(counts, x="category", y="count", title="Skill 按类别分布"), use_container_width=True)
+            st.dataframe(skill_df[["category", "title", "chars", "approx_tokens"]], use_container_width=True, hide_index=True)
+    with right:
+        st.write("Few-shot 示例")
+        if not isinstance(examples, list) or not examples:
+            st.info("暂无 Few-shot 示例")
+        else:
+            example_rows = [
+                {
+                    "input": str(item.get("input", ""))[:80],
+                    "core_intent": (item.get("output") or {}).get("core_intent"),
+                    "source": item.get("source"),
+                }
+                for item in examples[-80:]
+            ]
+            st.dataframe(pd.DataFrame(example_rows), use_container_width=True, hide_index=True)
 
+    with st.expander("查看 Prompt Policy"):
+        st.markdown(prompt_policy or "暂无 Prompt Policy")
     with st.expander("查看 SKILL.md"):
-        st.markdown(skill_text)
+        st.markdown(skill_text or "暂无 SKILL.md")
 
-
-def render_tip_memory(tip_records):
-    st.subheader("双层记忆：TipMemory -> 长期资产")
-    if not tip_records:
-        st.info("尚未生成 tips.jsonl。运行 evolve-demo 或开启进化后会先沉淀短期经验。")
-        return
-
-    rows = []
-    for record in tip_records:
-        rows.append(
-            {
-                "tip_id": record.get("tip_id"),
-                "status": record.get("status"),
-                "count": record.get("count"),
-                "root_cause_type": record.get("root_cause_type"),
-                "evolution_action": record.get("evolution_action"),
-                "target_category": record.get("target_category"),
-                "confidence": record.get("confidence"),
-                "first_ts": record.get("first_ts"),
-                "last_ts": record.get("last_ts"),
-                "proposed_rule": str(record.get("proposed_rule") or "")[:120],
-            }
+    if tips:
+        tip_df = pd.DataFrame(
+            [
+                {
+                    "tip_id": tip.get("tip_id"),
+                    "status": tip.get("status"),
+                    "count": tip.get("count"),
+                    "action": tip.get("evolution_action"),
+                    "root_cause": tip.get("root_cause_type"),
+                    "confidence": tip.get("confidence"),
+                    "rule": str(tip.get("proposed_rule") or "")[:100],
+                }
+                for tip in tips
+            ]
         )
-    df = pd.DataFrame(rows)
-    promoted = int((df["status"] == "promoted").sum())
-    buffered = int((df["status"] == "buffered").sum())
-    rejected = int((df["status"] == "rejected").sum())
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Tip 总数", len(df))
-    c2.metric("已晋升", promoted)
-    c3.metric("缓冲中", buffered)
-    c4.metric("已拒绝", rejected)
-
-    status_counts = df["status"].value_counts().reset_index()
-    status_counts.columns = ["status", "count"]
-    st.plotly_chart(px.bar(status_counts, x="status", y="count", title="短期经验状态"), use_container_width=True)
-
-    action_counts = df.groupby(["evolution_action", "status"], dropna=False).size().reset_index(name="count")
-    st.plotly_chart(px.bar(action_counts, x="evolution_action", y="count", color="status", title="按进化动作统计"), use_container_width=True)
-    st.dataframe(df.tail(100), use_container_width=True, hide_index=True)
+        status_counts = tip_df["status"].value_counts().reset_index()
+        status_counts.columns = ["status", "count"]
+        fig = px.bar(status_counts, x="status", y="count", title=f"双层记忆状态：buffered={buffered}, promoted={promoted}")
+        fig.update_layout(height=300, margin=dict(l=12, r=12, t=48, b=12))
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(tip_df.tail(100), use_container_width=True, hide_index=True)
 
 
 def render_transfer_test(report, transfer_traces):
-    st.subheader("Transfer Test Runner")
+    st.subheader("迁移测试")
     if not report:
-        st.info("尚未生成 transfer_report.json。运行 python tools/transfer_test_runner.py 后查看迁移验收结果。")
+        st.info("尚未生成 transfer_report.json")
         return
 
     c1, c2, c3 = st.columns(3)
@@ -247,7 +395,9 @@ def render_transfer_test(report, transfer_traces):
 
     suites = pd.DataFrame(report.get("suites") or [])
     if not suites.empty:
-        st.plotly_chart(px.bar(suites, x="domain", y="avg_score", color="modality", title="跨领域迁移评分"), use_container_width=True)
+        fig = px.bar(suites, x="domain", y="avg_score", color="modality", title="跨领域迁移评分")
+        fig.update_layout(height=330, margin=dict(l=12, r=12, t=48, b=12))
+        st.plotly_chart(fig, use_container_width=True)
         st.dataframe(suites, use_container_width=True, hide_index=True)
 
     if transfer_traces:
@@ -272,7 +422,7 @@ def render_transfer_test(report, transfer_traces):
 def render_saf_traces(trace_records):
     st.subheader("State-Action-Feedback 轨迹")
     if not trace_records:
-        st.info("尚未生成 saf_traces.jsonl。运行 benchmark 或 evolve-demo 后会出现统一轨迹。")
+        st.info("尚未生成 SAF 轨迹")
         return
 
     rows = []
@@ -288,7 +438,7 @@ def render_saf_traces(trace_records):
                 "score": feedback.get("score"),
                 "exact_match": feedback.get("exact_match"),
                 "errors": len(feedback.get("errors") or []),
-                "input": str(state.get("raw_input", ""))[:80],
+                "input": str(state.get("raw_input", ""))[:100],
             }
         )
     df = pd.DataFrame(rows)
@@ -298,17 +448,19 @@ def render_saf_traces(trace_records):
     c3.metric("Exact Match", f"{pd.to_numeric(df['exact_match'], errors='coerce').mean():.2%}")
 
     grouped = df.groupby(["domain", "modality"], dropna=False).size().reset_index(name="count")
-    st.plotly_chart(px.bar(grouped, x="domain", y="count", color="modality", title="跨领域/模态轨迹分布"), use_container_width=True)
-    st.dataframe(df.tail(100), use_container_width=True, hide_index=True)
+    fig = px.bar(grouped, x="domain", y="count", color="modality", title="领域与模态分布")
+    fig.update_layout(height=320, margin=dict(l=12, r=12, t=48, b=12))
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(df.tail(200), use_container_width=True, hide_index=True)
 
 
 def render_latest_patch(patch):
-    st.subheader("最新归因与优化指令")
+    st.subheader("最新归因")
     if not patch:
-        st.info("尚未生成 latest_patch.json。")
+        st.info("尚未生成 latest_patch.json")
         return
     c1, c2, c3 = st.columns(3)
-    c1.metric("错误类型", str(patch.get("root_cause_type") or patch.get("error_category") or "-"))
+    c1.metric("根因类型", str(patch.get("root_cause_type") or patch.get("error_category") or "-"))
     c2.metric("进化动作", str(patch.get("evolution_action") or "-"))
     c3.metric("置信度", f"{float(patch.get('confidence') or 0):.2f}")
     st.caption(f"目标类别: {patch.get('target_category') or '-'}")
@@ -320,34 +472,31 @@ def render_latest_patch(patch):
         st.json(patch)
 
 
-st.title("Self-Evolving Harness Dashboard")
-st.caption("展示执行、评估、反思、进化、防退化与跨领域 State-Action-Feedback 轨迹。")
-
 metrics = read_csv("metrics.csv")
 tokens = read_csv("token_usage.csv")
 versions = read_jsonl("skill_versions.jsonl")
 traces = read_jsonl("saf_traces.jsonl", limit=3000)
 tips = read_jsonl("tips.jsonl", limit=3000)
+rejected = read_jsonl("rejected_skills.jsonl", limit=3000)
 transfer_report = read_json("transfer_report.json")
 transfer_traces = read_jsonl("transfer_traces.jsonl", limit=3000)
 skill_text = read_text("SKILL.md")
+prompt_policy = read_text("PROMPT_POLICY.md")
+examples = read_json("examples.json", default=[])
 latest_patch = read_json("latest_patch.json")
 
-tab_overview, tab_evolution, tab_skill, tab_tip, tab_transfer, tab_trace, tab_patch = st.tabs(
-    ["总览", "进化与回滚", "SkillRepo", "双层记忆", "迁移测试", "SAF 轨迹", "最新归因"]
+tab_demo, tab_evolution, tab_memory, tab_transfer, tab_trace, tab_patch = st.tabs(
+    ["演示总览", "进化与回滚", "记忆资产", "迁移测试", "SAF 轨迹", "最新归因"]
 )
 
-with tab_overview:
-    render_overview(metrics, tokens)
+with tab_demo:
+    render_demo_overview(metrics, tokens, versions, tips, rejected, skill_text, prompt_policy, examples, transfer_report)
 
 with tab_evolution:
     render_evolution(versions)
 
-with tab_skill:
-    render_skill_repo(skill_text)
-
-with tab_tip:
-    render_tip_memory(tips)
+with tab_memory:
+    render_memory(skill_text, prompt_policy, examples, tips, rejected)
 
 with tab_transfer:
     render_transfer_test(transfer_report, transfer_traces)
