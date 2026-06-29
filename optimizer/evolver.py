@@ -6,6 +6,8 @@ import re
 import shutil
 import time
 
+from optimizer.tip_memory import TipMemory
+
 
 class SkillEvolver:
     def __init__(self, evaluator, llm_client):
@@ -19,6 +21,7 @@ class SkillEvolver:
         self.examples_backup_file = "memory/examples_backup.json"
         self.version_log_file = "memory/skill_versions.jsonl"
         self.rejected_file = "memory/rejected_skills.jsonl"
+        self.tip_memory = TipMemory()
         self.valid_categories = ["\u9000\u6b3e\u7ea0\u7eb7", "\u7269\u6d41\u6295\u8bc9", "\u8d26\u53f7\u5c01\u7981", "\u7cfb\u7edfBug", "\u865a\u5047\u5ba3\u4f20"]
         self.valid_actions = {"skill_patch", "prompt_patch", "few_shot_patch"}
 
@@ -190,6 +193,8 @@ Output contract: Return compact JSON only and preserve the required schema exact
             "root_cause_type": patch_data.get("root_cause_type"),
             "evolution_action": patch_data.get("evolution_action"),
             "confidence": patch_data.get("confidence"),
+            "tip_id": patch_data.get("tip_id"),
+            "tip_count": patch_data.get("tip_count"),
             "affected_fields": patch_data.get("affected_fields", []),
             "risk_flags": patch_data.get("risk_flags", []),
             "metrics": metrics or {},
@@ -371,7 +376,24 @@ Output contract: Return compact JSON only and preserve the required schema exact
         action = patch_data.get("evolution_action") or "skill_patch"
         if action not in self.valid_actions:
             action = "skill_patch"
-            patch_data["evolution_action"] = action
+        patch_data["evolution_action"] = action
+
+        evolution_cfg = config.get("evolution", {})
+        if bool(evolution_cfg.get("enable_tip_memory", True)):
+            tip = self.tip_memory.add_or_update(patch_data)
+            patch_data["tip_id"] = tip.get("tip_id")
+            patch_data["tip_count"] = tip.get("count")
+            if tip.get("status") == "promoted":
+                print(f"[Evolver] Tip {tip.get('tip_id')} is already promoted; skipping duplicate long-term write.")
+                self._append_version_log("tip_already_promoted", patch_data, {"tip_count": tip.get("count")})
+                return baseline_f1, False
+            if not self.tip_memory.should_promote(tip, config):
+                print(f"[Evolver] Buffered transient tip {tip.get('tip_id')} ({tip.get('count')} hit); waiting for repeat or higher confidence.")
+                self._append_version_log("tip_buffered", patch_data, {"promotion_threshold": int(evolution_cfg.get("tip_promotion_threshold", 2))})
+                return baseline_f1, False
+            print(f"[Evolver] Promoting tip {tip.get('tip_id')} from short-term memory ({tip.get('count')} hit).")
+            self._append_version_log("tip_promoted", patch_data, {"tip_count": tip.get("count")})
+
         print(f"[Evolver] Generating a compact {action}...")
         runtime_cfg = config.get("runtime", {})
         use_rule_evolver = bool(runtime_cfg.get("use_rule_evolver", False))
@@ -383,12 +405,13 @@ Output contract: Return compact JSON only and preserve the required schema exact
         written = self._write_action_artifact(action, artifact_text)
         if not written:
             self._append_rejected_skill("invalid_action_artifact", artifact_text, patch_data)
+            if patch_data.get("tip_id"):
+                self.tip_memory.mark_rejected(patch_data["tip_id"], "invalid_action_artifact")
             return baseline_f1, False
         self._append_version_log("candidate_written", patch_data, {"baseline_f1": baseline_f1})
 
         with open(self.skill_file, "r", encoding="utf-8") as f:
             updated_skills = f.read()
-        evolution_cfg = config.get("evolution", {})
         regression_mode = evolution_cfg.get("regression_mode", "sample_then_full")
         threshold = float(evolution_cfg.get("f1_tolerance", 0.02))
         batch_size = int(runtime_cfg.get("batch_size", 8))
@@ -400,6 +423,8 @@ Output contract: Return compact JSON only and preserve the required schema exact
         if sample_f1 + threshold < baseline_f1:
             self._rollback_artifact(action)
             self._append_rejected_skill("sample_regression_drop", artifact_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1})
+            if patch_data.get("tip_id"):
+                self.tip_memory.mark_rejected(patch_data["tip_id"], "sample_regression_drop", {"baseline_f1": baseline_f1, "sample_f1": sample_f1})
             self._append_version_log("rolled_back_sample_regression", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1})
             return baseline_f1, False
 
@@ -409,6 +434,8 @@ Output contract: Return compact JSON only and preserve the required schema exact
         if replay_f1 + threshold < baseline_f1:
             self._rollback_artifact(action)
             self._append_rejected_skill("replay_regression_drop", artifact_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
+            if patch_data.get("tip_id"):
+                self.tip_memory.mark_rejected(patch_data["tip_id"], "replay_regression_drop", {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
             self._append_version_log("rolled_back_replay_regression", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
             return baseline_f1, False
 
@@ -418,12 +445,18 @@ Output contract: Return compact JSON only and preserve the required schema exact
             if new_avg_f1 + threshold < baseline_f1:
                 self._rollback_artifact(action)
                 self._append_rejected_skill("full_regression_drop", artifact_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})
+                if patch_data.get("tip_id"):
+                    self.tip_memory.mark_rejected(patch_data["tip_id"], "full_regression_drop", {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})
                 self._append_version_log("rolled_back_full_regression", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})
                 return baseline_f1, False
             self._curate_skill_repo(config)
+            if patch_data.get("tip_id"):
+                self.tip_memory.mark_promoted(patch_data["tip_id"], {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})
             self._append_version_log("accepted_full_regression", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})
             return new_avg_f1, True
 
         self._curate_skill_repo(config)
+        if patch_data.get("tip_id"):
+            self.tip_memory.mark_promoted(patch_data["tip_id"], {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
         self._append_version_log("accepted_sample_replay", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
         return min(sample_f1, replay_f1), True

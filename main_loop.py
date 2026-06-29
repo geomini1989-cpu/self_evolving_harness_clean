@@ -50,7 +50,18 @@ DEFAULT_RUNTIME = {
     "reset_state": False,
 }
 DEFAULT_CACHE = {"enabled": True, "path": "memory/llm_cache.jsonl"}
-DEFAULT_EVOLUTION = {"regression_mode": "sample_then_full", "f1_tolerance": 0.02, "confidence_threshold": 0.7, "sample_size": 10, "replay_size": 20, "max_new_skill_chars": 900, "max_skills_per_category": 5}
+DEFAULT_EVOLUTION = {
+    "regression_mode": "sample_then_full",
+    "f1_tolerance": 0.02,
+    "confidence_threshold": 0.7,
+    "sample_size": 10,
+    "replay_size": 20,
+    "max_new_skill_chars": 900,
+    "max_skills_per_category": 5,
+    "enable_tip_memory": True,
+    "tip_promotion_threshold": 2,
+    "tip_immediate_confidence": 0.85,
+}
 
 
 def deep_merge_defaults(config):
@@ -278,7 +289,7 @@ def prepare_demo_env(reset_state=False):
     os.makedirs("adapters", exist_ok=True)
     if not reset_state:
         return
-    for file in ["memory/metrics.csv", "memory/latest_patch.json", "memory/token_usage.csv", "memory/llm_cache.jsonl", "memory/PROMPT_POLICY.md", "memory/PROMPT_POLICY_backup.md"]:
+    for file in ["memory/metrics.csv", "memory/latest_patch.json", "memory/token_usage.csv", "memory/llm_cache.jsonl", "memory/PROMPT_POLICY.md", "memory/PROMPT_POLICY_backup.md", "memory/tips.jsonl"]:
         if os.path.exists(file):
             os.remove(file)
     for file in ["memory/SKILL.md", "memory/examples.json", "memory/SKILL_backup.md"]:
@@ -366,7 +377,10 @@ def run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, e
     stats = llm.snapshot_stats()
     log_metrics("evolve_demo", new_f1, stats, 0)
     print(f"[Evolution Demo] Patch success={success}; regression F1={new_f1:.2f}; fixed bad-case F1={fixed_eval['f1_score']:.2f}")
-    print("[Evolution Demo] Skill memory updated: memory/SKILL.md")
+    if success:
+        print("[Evolution Demo] Long-term memory updated after regression gates.")
+    else:
+        print("[Evolution Demo] Long-term memory unchanged; short-term memory kept the evidence.")
 
 
 def run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data, meta_intervention, enable_few_shots, enable_f1_postprocess=True, enable_rule_fast_path=False):

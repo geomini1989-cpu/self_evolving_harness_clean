@@ -192,6 +192,48 @@ def render_skill_repo(skill_text):
         st.markdown(skill_text)
 
 
+def render_tip_memory(tip_records):
+    st.subheader("双层记忆：TipMemory -> 长期资产")
+    if not tip_records:
+        st.info("尚未生成 tips.jsonl。运行 evolve-demo 或开启进化后会先沉淀短期经验。")
+        return
+
+    rows = []
+    for record in tip_records:
+        rows.append(
+            {
+                "tip_id": record.get("tip_id"),
+                "status": record.get("status"),
+                "count": record.get("count"),
+                "root_cause_type": record.get("root_cause_type"),
+                "evolution_action": record.get("evolution_action"),
+                "target_category": record.get("target_category"),
+                "confidence": record.get("confidence"),
+                "first_ts": record.get("first_ts"),
+                "last_ts": record.get("last_ts"),
+                "proposed_rule": str(record.get("proposed_rule") or "")[:120],
+            }
+        )
+    df = pd.DataFrame(rows)
+    promoted = int((df["status"] == "promoted").sum())
+    buffered = int((df["status"] == "buffered").sum())
+    rejected = int((df["status"] == "rejected").sum())
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Tip 总数", len(df))
+    c2.metric("已晋升", promoted)
+    c3.metric("缓冲中", buffered)
+    c4.metric("已拒绝", rejected)
+
+    status_counts = df["status"].value_counts().reset_index()
+    status_counts.columns = ["status", "count"]
+    st.plotly_chart(px.bar(status_counts, x="status", y="count", title="短期经验状态"), use_container_width=True)
+
+    action_counts = df.groupby(["evolution_action", "status"], dropna=False).size().reset_index(name="count")
+    st.plotly_chart(px.bar(action_counts, x="evolution_action", y="count", color="status", title="按进化动作统计"), use_container_width=True)
+    st.dataframe(df.tail(100), use_container_width=True, hide_index=True)
+
+
 def render_saf_traces(trace_records):
     st.subheader("State-Action-Feedback 轨迹")
     if not trace_records:
@@ -250,11 +292,12 @@ metrics = read_csv("metrics.csv")
 tokens = read_csv("token_usage.csv")
 versions = read_jsonl("skill_versions.jsonl")
 traces = read_jsonl("saf_traces.jsonl", limit=3000)
+tips = read_jsonl("tips.jsonl", limit=3000)
 skill_text = read_text("SKILL.md")
 latest_patch = read_json("latest_patch.json")
 
-tab_overview, tab_evolution, tab_skill, tab_trace, tab_patch = st.tabs(
-    ["总览", "进化与回滚", "SkillRepo", "SAF 轨迹", "最新归因"]
+tab_overview, tab_evolution, tab_skill, tab_tip, tab_trace, tab_patch = st.tabs(
+    ["总览", "进化与回滚", "SkillRepo", "双层记忆", "SAF 轨迹", "最新归因"]
 )
 
 with tab_overview:
@@ -265,6 +308,9 @@ with tab_evolution:
 
 with tab_skill:
     render_skill_repo(skill_text)
+
+with tab_tip:
+    render_tip_memory(tips)
 
 with tab_trace:
     render_saf_traces(traces)

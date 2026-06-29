@@ -43,8 +43,11 @@ evolution:
   replay_size: 20
   max_new_skill_chars: 900
   max_skills_per_category: 5
+  enable_tip_memory: true
+  tip_promotion_threshold: 2
+  tip_immediate_confidence: 0.85
 
 competition:
   topic: "题目1：算法方向"
   paper_direction: "SkillOS + SkillOpt"
-  method: "冻结基座模型参数，通过根因驱动动作选择器、技能检索、Prompt/Skill/Few-shot 联动进化、置信度门控、经验回放、拒绝编辑缓冲区、SkillRepo 去重淘汰、版本回滚和 F1 后处理提升指标，并降低 Token 消耗。"
+  method: "冻结基座模型参数，通过根因驱动动作选择器、双层记忆、技能检索、Prompt/Skill/Few-shot 联动进化、置信度门控、经验回放、拒绝编辑缓冲区、SkillRepo 去重淘汰、版本回滚和 F1 后处理提升指标，并降低 Token 消耗。短期 TipMemory 先缓冲低风险经验，只有高置信或重复出现的经验才晋升为长期 Prompt/Skill/Few-shot 资产。"
