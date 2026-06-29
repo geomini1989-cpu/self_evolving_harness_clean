@@ -9,6 +9,7 @@ import time
 
 import yaml
 
+from adapters.ticket_adapter import TicketAdapter
 from core.llm_client import BaseLLMClient
 from core.evaluator import TaskEvaluator
 from core.f1_optimizer import F1PostProcessor
@@ -168,6 +169,20 @@ def log_latest_patch(patch_data):
         json.dump(patch_data, f, ensure_ascii=False, indent=2)
 
 
+def log_saf_trace(adapter, data, prediction, eval_result, epoch):
+    file_path = "memory/saf_traces.jsonl"
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    trace = adapter.make_trace(
+        data["input"],
+        prediction,
+        eval_result,
+        epoch=epoch,
+        ground_truth=data.get("ground_truth", {}),
+    )
+    with open(file_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(trace.to_record(), ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
 def extract_entities(text):
     entities = []
     for pattern in ENTITY_PATTERNS:
@@ -291,7 +306,7 @@ def score_rule_dataset(evaluator, memory_bank, dataset):
     return sum(item["eval_result"]["f1_score"] for item in results) / len(dataset)
 
 
-def run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, evolver, golden_dataset):
+def run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, evolver, golden_dataset, domain_adapter):
     print("[Evolution Demo] Forcing one bad case to demonstrate execute-evaluate-reflect-evolve.")
     memory_bank.refresh_skills()
     target = next((item for item in golden_dataset if item["ground_truth"].get("core_intent") != FALSE_AD), golden_dataset[0])
@@ -311,6 +326,7 @@ def run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, e
         "prediction": prediction_text,
         "eval_result": bad_eval,
     }
+    log_saf_trace(domain_adapter, bad_case, prediction_text, bad_eval, "evolve_demo_bad_case")
     print(f"[Evolution Demo] Bad case F1={bad_eval['f1_score']:.2f}; baseline set F1={baseline_f1:.2f}")
     patch = attributor.analyze_root_cause(
         bad_case["eval_result"],
@@ -336,6 +352,7 @@ def run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, e
     memory_bank.refresh_skills()
     fixed_prediction = json.dumps(infer_ground_truth(target["input"], memory_bank), ensure_ascii=False, separators=(",", ":"))
     fixed_eval = evaluator.evaluate(fixed_prediction, target["ground_truth"])
+    log_saf_trace(domain_adapter, target, fixed_prediction, fixed_eval, "evolve_demo_fixed_case")
     stats = llm.snapshot_stats()
     log_metrics("evolve_demo", new_f1, stats, 0)
     print(f"[Evolution Demo] Patch success={success}; regression F1={new_f1:.2f}; fixed bad-case F1={fixed_eval['f1_score']:.2f}")
@@ -384,6 +401,7 @@ def run_harness_loop(config=None):
     prepare_demo_env(reset_state=bool(runtime.get("reset_state", False)))
     llm = BaseLLMClient(cache_enabled=bool(config["cache"].get("enabled", True)), cache_path=config["cache"].get("path", "memory/llm_cache.jsonl"))
     evaluator = TaskEvaluator(config_path)
+    domain_adapter = TicketAdapter(schema=config.get("schema", {}))
     memory_bank = MemoryBank()
     f1_optimizer = F1PostProcessor(memory_bank)
     attributor = SkillAttributor(llm)
@@ -393,7 +411,7 @@ def run_harness_loop(config=None):
     golden_dataset = init_real_dataset(sample_size=sample_size, shuffle_seed=runtime.get("shuffle_seed", 2026))
     print(f"[Harness] Mode: {runtime.get('mode', 'demo')} | Dataset size: {len(golden_dataset)}")
     if bool(runtime.get("force_evolution_demo", False)):
-        run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, evolver, golden_dataset)
+        run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, evolver, golden_dataset, domain_adapter)
         return
     epochs = int(runtime.get("epochs", 6))
     batch_size = int(runtime.get("batch_size", 8))
@@ -440,6 +458,7 @@ def run_harness_loop(config=None):
         for result in results:
             eval_result = result["eval_result"]
             epoch_total_f1 += eval_result["f1_score"]
+            log_saf_trace(domain_adapter, result["data"], result["prediction"], eval_result, epoch)
             if eval_result["exact_match"]:
                 memory_bank.add_successful_case(result["data"]["input"], evaluator._extract_json_from_text(result["prediction"]))
             elif bad_case is None:
