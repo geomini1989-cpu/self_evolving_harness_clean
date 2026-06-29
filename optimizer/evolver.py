@@ -182,6 +182,12 @@ Output contract: Return compact JSON only and preserve the required schema exact
         with open(path, "rb") as f:
             return hashlib.sha256(f.read()).hexdigest()
 
+    def _read_text_file(self, path, default=""):
+        if not os.path.exists(path):
+            return default
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
     def _append_version_log(self, event, patch_data, metrics=None):
         os.makedirs(os.path.dirname(self.version_log_file), exist_ok=True)
         record = {
@@ -307,12 +313,20 @@ Output contract: Return compact JSON only and preserve the required schema exact
     def _rollback(self):
         if os.path.exists(self.backup_file):
             shutil.copy(self.backup_file, self.skill_file)
+        elif os.path.exists(self.skill_file):
+            os.remove(self.skill_file)
 
     def _rollback_artifact(self, action):
-        if action == "prompt_patch" and os.path.exists(self.prompt_policy_backup_file):
-            shutil.copy(self.prompt_policy_backup_file, self.prompt_policy_file)
-        elif action == "few_shot_patch" and os.path.exists(self.examples_backup_file):
-            shutil.copy(self.examples_backup_file, self.examples_file)
+        if action == "prompt_patch":
+            if os.path.exists(self.prompt_policy_backup_file):
+                shutil.copy(self.prompt_policy_backup_file, self.prompt_policy_file)
+            elif os.path.exists(self.prompt_policy_file):
+                os.remove(self.prompt_policy_file)
+        elif action == "few_shot_patch":
+            if os.path.exists(self.examples_backup_file):
+                shutil.copy(self.examples_backup_file, self.examples_file)
+            elif os.path.exists(self.examples_file):
+                os.remove(self.examples_file)
         else:
             self._rollback()
 
@@ -410,8 +424,7 @@ Output contract: Return compact JSON only and preserve the required schema exact
             return baseline_f1, False
         self._append_version_log("candidate_written", patch_data, {"baseline_f1": baseline_f1})
 
-        with open(self.skill_file, "r", encoding="utf-8") as f:
-            updated_skills = f.read()
+        updated_skills = self._read_text_file(self.skill_file)
         regression_mode = evolution_cfg.get("regression_mode", "sample_then_full")
         threshold = float(evolution_cfg.get("f1_tolerance", 0.02))
         batch_size = int(runtime_cfg.get("batch_size", 8))
