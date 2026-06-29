@@ -86,6 +86,22 @@ def coerce_numeric_column(series):
     return converted
 
 
+def plot_chart(fig):
+    st.plotly_chart(fig, width="stretch")
+
+
+def show_table(df, **kwargs):
+    st.dataframe(df, width="stretch", **kwargs)
+
+
+def numeric_long_frame(df, index_col, value_cols, name_col="metric", value_col="value"):
+    numeric_df = df[[index_col] + value_cols].copy()
+    for col in value_cols:
+        numeric_df[col] = pd.to_numeric(numeric_df[col], errors="coerce")
+    long_df = numeric_df.melt(id_vars=index_col, value_vars=value_cols, var_name=name_col, value_name=value_col)
+    return long_df.dropna(subset=[value_col])
+
+
 @st.cache_data(ttl=3)
 def read_csv(name):
     file_path = path(name)
@@ -249,7 +265,7 @@ def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_t
                 color_discrete_sequence=["#2563eb"],
             )
             fig.update_layout(height=330, margin=dict(l=12, r=12, t=48, b=12))
-            st.plotly_chart(fig, use_container_width=True)
+            plot_chart(fig)
         else:
             st.info("尚未生成 metrics.csv")
     with right:
@@ -267,7 +283,7 @@ def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_t
                 color_discrete_sequence=px.colors.qualitative.Set2,
             )
             fig.update_layout(height=330, showlegend=False, margin=dict(l=12, r=12, t=48, b=12))
-            st.plotly_chart(fig, use_container_width=True)
+            plot_chart(fig)
         else:
             st.info("尚未生成 skill_versions.jsonl")
 
@@ -275,7 +291,7 @@ def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_t
         grouped = token_df.groupby("model_type", dropna=False)["total_tokens"].sum().reset_index()
         fig = px.bar(grouped, x="model_type", y="total_tokens", title="Token 消耗按模型类型统计", color="model_type")
         fig.update_layout(height=280, showlegend=False, margin=dict(l=12, r=12, t=48, b=12))
-        st.plotly_chart(fig, use_container_width=True)
+        plot_chart(fig)
 
 
 def render_evolution(version_records):
@@ -315,11 +331,13 @@ def render_evolution(version_records):
     f1_df = df[f1_cols].dropna(how="all")
     if not f1_df.empty:
         f1_df = f1_df.reset_index(names="step")
-        fig = px.line(f1_df, x="step", y=f1_cols, markers=True, title="回归门控结果")
-        fig.update_layout(height=330, margin=dict(l=12, r=12, t=48, b=12))
-        st.plotly_chart(fig, use_container_width=True)
+        long_f1 = numeric_long_frame(f1_df, "step", f1_cols)
+        if not long_f1.empty:
+            fig = px.line(long_f1, x="step", y="value", color="metric", markers=True, title="回归门控结果")
+            fig.update_layout(height=330, margin=dict(l=12, r=12, t=48, b=12))
+            plot_chart(fig)
 
-    st.dataframe(df.tail(80), use_container_width=True, hide_index=True)
+    show_table(df.tail(80), hide_index=True)
 
 
 def render_memory(skill_text, prompt_policy, examples, tips, rejected):
@@ -344,8 +362,8 @@ def render_memory(skill_text, prompt_policy, examples, tips, rejected):
             st.info("暂无已接受 Skill")
         else:
             counts = skill_df.groupby("category").size().reset_index(name="count")
-            st.plotly_chart(px.bar(counts, x="category", y="count", title="Skill 按类别分布"), use_container_width=True)
-            st.dataframe(skill_df[["category", "title", "chars", "approx_tokens"]], use_container_width=True, hide_index=True)
+            plot_chart(px.bar(counts, x="category", y="count", title="Skill 按类别分布"))
+            show_table(skill_df[["category", "title", "chars", "approx_tokens"]], hide_index=True)
     with right:
         st.write("Few-shot 示例")
         if not isinstance(examples, list) or not examples:
@@ -359,7 +377,7 @@ def render_memory(skill_text, prompt_policy, examples, tips, rejected):
                 }
                 for item in examples[-80:]
             ]
-            st.dataframe(pd.DataFrame(example_rows), use_container_width=True, hide_index=True)
+            show_table(pd.DataFrame(example_rows), hide_index=True)
 
     with st.expander("查看 Prompt Policy"):
         st.markdown(prompt_policy or "暂无 Prompt Policy")
@@ -385,8 +403,8 @@ def render_memory(skill_text, prompt_policy, examples, tips, rejected):
         status_counts.columns = ["status", "count"]
         fig = px.bar(status_counts, x="status", y="count", title=f"双层记忆状态：buffered={buffered}, promoted={promoted}")
         fig.update_layout(height=300, margin=dict(l=12, r=12, t=48, b=12))
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(tip_df.tail(100), use_container_width=True, hide_index=True)
+        plot_chart(fig)
+        show_table(tip_df.tail(100), hide_index=True)
 
 
 def render_transfer_test(report, transfer_traces):
@@ -404,8 +422,8 @@ def render_transfer_test(report, transfer_traces):
     if not suites.empty:
         fig = px.bar(suites, x="domain", y="avg_score", color="modality", title="跨领域迁移评分")
         fig.update_layout(height=330, margin=dict(l=12, r=12, t=48, b=12))
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(suites, use_container_width=True, hide_index=True)
+        plot_chart(fig)
+        show_table(suites, hide_index=True)
 
     if transfer_traces:
         rows = []
@@ -423,7 +441,7 @@ def render_transfer_test(report, transfer_traces):
                     "errors": len(feedback.get("errors") or []),
                 }
             )
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        show_table(pd.DataFrame(rows), hide_index=True)
 
 
 def render_saf_traces(trace_records):
@@ -457,8 +475,8 @@ def render_saf_traces(trace_records):
     grouped = df.groupby(["domain", "modality"], dropna=False).size().reset_index(name="count")
     fig = px.bar(grouped, x="domain", y="count", color="modality", title="领域与模态分布")
     fig.update_layout(height=320, margin=dict(l=12, r=12, t=48, b=12))
-    st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(df.tail(200), use_container_width=True, hide_index=True)
+    plot_chart(fig)
+    show_table(df.tail(200), hide_index=True)
 
 
 def render_latest_patch(patch):
