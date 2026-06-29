@@ -13,10 +13,14 @@ class SkillEvolver:
         self.llm = llm_client
         self.skill_file = "memory/SKILL.md"
         self.backup_file = "memory/SKILL_backup.md"
+        self.prompt_policy_file = "memory/PROMPT_POLICY.md"
+        self.prompt_policy_backup_file = "memory/PROMPT_POLICY_backup.md"
         self.examples_file = "memory/examples.json"
+        self.examples_backup_file = "memory/examples_backup.json"
         self.version_log_file = "memory/skill_versions.jsonl"
         self.rejected_file = "memory/rejected_skills.jsonl"
         self.valid_categories = ["\u9000\u6b3e\u7ea0\u7eb7", "\u7269\u6d41\u6295\u8bc9", "\u8d26\u53f7\u5c01\u7981", "\u7cfb\u7edfBug", "\u865a\u5047\u5ba3\u4f20"]
+        self.valid_actions = {"skill_patch", "prompt_patch", "few_shot_patch"}
 
     def _build_evolve_prompt(self, root_cause_analysis):
         analysis_text = json.dumps(root_cause_analysis, ensure_ascii=False, separators=(",", ":")) if isinstance(root_cause_analysis, dict) else str(root_cause_analysis)
@@ -42,6 +46,24 @@ Root cause JSON: {analysis_text}
 Trigger: {trigger}
 Action: {action}
 Verification: {verification}"""
+
+    def _build_prompt_policy(self, patch_data):
+        rule = patch_data.get("proposed_rule") or "Keep output compact, valid, and schema-compliant."
+        root_type = patch_data.get("root_cause_type") or "unknown"
+        return f"""## Prompt policy patch: {root_type}
+Trigger: {patch_data.get("source_error") or patch_data.get("input_excerpt") or "schema/output instability"}
+Instruction: {rule}
+Output contract: Return compact JSON only and preserve the required schema exactly."""
+
+    def _build_few_shot_example(self, patch_data):
+        example_input = patch_data.get("example_input") or patch_data.get("input_excerpt") or ""
+        example_output = patch_data.get("example_output") or {
+            "core_intent": patch_data.get("target_category") or self.valid_categories[0],
+            "urgency_level": "\u4e2d",
+            "entities": [],
+            "summary": "\u7528\u6237\u8d1f\u9762\u4f53\u9a8c\u5ba2\u8bc9\u5904\u7406",
+        }
+        return {"input": example_input, "output": example_output, "source": "evolution_action_selector"}
 
     def _bounded_skill_text(self, skill_text, config):
         max_chars = int(config.get("evolution", {}).get("max_new_skill_chars", 900))
@@ -82,6 +104,38 @@ Verification: {verification}"""
         with open(self.skill_file, "a", encoding="utf-8") as f:
             f.write(f"\n\n{clean_text}\n")
         print(f"[Evolver] Added new skill for {category}.")
+        return True
+
+    def _safe_write_prompt_policy(self, policy_text):
+        clean_text = policy_text.strip()
+        if not clean_text.startswith("## Prompt policy patch:"):
+            print(f"[Evolver] Rejected invalid prompt policy format: {clean_text[:80]}...")
+            return False
+        if os.path.exists(self.prompt_policy_file):
+            shutil.copy(self.prompt_policy_file, self.prompt_policy_backup_file)
+        os.makedirs(os.path.dirname(self.prompt_policy_file), exist_ok=True)
+        with open(self.prompt_policy_file, "a", encoding="utf-8") as f:
+            f.write(f"\n\n{clean_text}\n")
+        print("[Evolver] Added prompt policy patch.")
+        return True
+
+    def _safe_write_few_shot(self, example):
+        os.makedirs(os.path.dirname(self.examples_file), exist_ok=True)
+        examples = []
+        if os.path.exists(self.examples_file):
+            shutil.copy(self.examples_file, self.examples_backup_file)
+            try:
+                with open(self.examples_file, "r", encoding="utf-8") as f:
+                    examples = json.load(f)
+            except Exception:
+                examples = []
+        if any(item.get("input") == example.get("input") for item in examples):
+            print("[Evolver] Few-shot example already exists; keeping current memory.")
+            return True
+        examples.append(example)
+        with open(self.examples_file, "w", encoding="utf-8") as f:
+            json.dump(examples[-100:], f, ensure_ascii=False, indent=2)
+        print("[Evolver] Added few-shot example.")
         return True
 
     def _skill_hash(self, text):
@@ -134,6 +188,7 @@ Verification: {verification}"""
             "backup_sha256": self._file_sha256(self.backup_file),
             "target_category": patch_data.get("target_category"),
             "root_cause_type": patch_data.get("root_cause_type"),
+            "evolution_action": patch_data.get("evolution_action"),
             "confidence": patch_data.get("confidence"),
             "affected_fields": patch_data.get("affected_fields", []),
             "risk_flags": patch_data.get("risk_flags", []),
@@ -248,6 +303,34 @@ Verification: {verification}"""
         if os.path.exists(self.backup_file):
             shutil.copy(self.backup_file, self.skill_file)
 
+    def _rollback_artifact(self, action):
+        if action == "prompt_patch" and os.path.exists(self.prompt_policy_backup_file):
+            shutil.copy(self.prompt_policy_backup_file, self.prompt_policy_file)
+        elif action == "few_shot_patch" and os.path.exists(self.examples_backup_file):
+            shutil.copy(self.examples_backup_file, self.examples_file)
+        else:
+            self._rollback()
+
+    def _build_action_artifact(self, action, patch_data, config, use_rule_evolver):
+        if action == "prompt_patch":
+            return self._bounded_skill_text(self._build_prompt_policy(patch_data), config)
+        if action == "few_shot_patch":
+            example = self._build_few_shot_example(patch_data)
+            return json.dumps(example, ensure_ascii=False, separators=(",", ":"))
+        if use_rule_evolver:
+            text = self._build_rule_skill(patch_data)
+        else:
+            evolve_prompt = self._build_evolve_prompt(patch_data)
+            text = self.llm.generate(evolve_prompt, temperature=0.2, model_type="smart", max_tokens=500)
+        return self._bounded_skill_text(text, config)
+
+    def _write_action_artifact(self, action, artifact_text):
+        if action == "prompt_patch":
+            return self._safe_write_prompt_policy(artifact_text)
+        if action == "few_shot_patch":
+            return self._safe_write_few_shot(json.loads(artifact_text))
+        return self._safe_write_skill_to_md(artifact_text)
+
     def _curate_skill_repo(self, config):
         if not os.path.exists(self.skill_file):
             return
@@ -285,21 +368,21 @@ Verification: {verification}"""
         if not self._passes_confidence_gate(patch_data, config):
             return baseline_f1, False
 
-        print("[Evolver] Generating a compact skill patch...")
+        action = patch_data.get("evolution_action") or "skill_patch"
+        if action not in self.valid_actions:
+            action = "skill_patch"
+            patch_data["evolution_action"] = action
+        print(f"[Evolver] Generating a compact {action}...")
         runtime_cfg = config.get("runtime", {})
         use_rule_evolver = bool(runtime_cfg.get("use_rule_evolver", False))
-        if use_rule_evolver:
-            new_skill_text = self._build_rule_skill(patch_data)
-        else:
-            evolve_prompt = self._build_evolve_prompt(patch_data)
-            new_skill_text = self.llm.generate(evolve_prompt, temperature=0.2, model_type="smart", max_tokens=500)
-        new_skill_text = self._bounded_skill_text(new_skill_text, config)
-        if self._is_rejected_before(new_skill_text):
+        artifact_text = self._build_action_artifact(action, patch_data, config, use_rule_evolver)
+        if self._is_rejected_before(artifact_text):
             print("[Evolver] Rejected repeated candidate from rejected-edit buffer.")
             self._append_version_log("rejected_repeated_candidate", patch_data, {})
             return baseline_f1, False
-        if not self._safe_write_skill_to_md(new_skill_text):
-            self._append_rejected_skill("invalid_skill_format", new_skill_text, patch_data)
+        written = self._write_action_artifact(action, artifact_text)
+        if not written:
+            self._append_rejected_skill("invalid_action_artifact", artifact_text, patch_data)
             return baseline_f1, False
         self._append_version_log("candidate_written", patch_data, {"baseline_f1": baseline_f1})
 
@@ -315,8 +398,8 @@ Verification: {verification}"""
         sample_f1 = local_score_func(sample_set) if local_score_func else self._score_dataset(sample_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True)
         print(f"[Evolver] Sample regression F1: {sample_f1:.2f}; baseline: {baseline_f1:.2f}")
         if sample_f1 + threshold < baseline_f1:
-            self._rollback()
-            self._append_rejected_skill("sample_regression_drop", new_skill_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1})
+            self._rollback_artifact(action)
+            self._append_rejected_skill("sample_regression_drop", artifact_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1})
             self._append_version_log("rolled_back_sample_regression", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1})
             return baseline_f1, False
 
@@ -324,8 +407,8 @@ Verification: {verification}"""
         replay_f1 = local_score_func(replay_set) if local_score_func else self._score_dataset(replay_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True)
         print(f"[Evolver] Replay regression F1: {replay_f1:.2f}; baseline: {baseline_f1:.2f}; replay_size={len(replay_set)}")
         if replay_f1 + threshold < baseline_f1:
-            self._rollback()
-            self._append_rejected_skill("replay_regression_drop", new_skill_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
+            self._rollback_artifact(action)
+            self._append_rejected_skill("replay_regression_drop", artifact_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
             self._append_version_log("rolled_back_replay_regression", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1})
             return baseline_f1, False
 
@@ -333,8 +416,8 @@ Verification: {verification}"""
             new_avg_f1 = local_score_func(golden_set) if local_score_func else self._score_dataset(golden_set, config, build_prompt_func, updated_skills, batch_size=batch_size, max_workers=max_workers, use_cache=True)
             print(f"[Evolver] Full regression F1: {new_avg_f1:.2f}; baseline: {baseline_f1:.2f}")
             if new_avg_f1 + threshold < baseline_f1:
-                self._rollback()
-                self._append_rejected_skill("full_regression_drop", new_skill_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})
+                self._rollback_artifact(action)
+                self._append_rejected_skill("full_regression_drop", artifact_text, patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})
                 self._append_version_log("rolled_back_full_regression", patch_data, {"baseline_f1": baseline_f1, "sample_f1": sample_f1, "replay_f1": replay_f1, "full_f1": new_avg_f1})
                 return baseline_f1, False
             self._curate_skill_repo(config)

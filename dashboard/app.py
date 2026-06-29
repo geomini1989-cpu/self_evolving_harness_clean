@@ -145,6 +145,7 @@ def render_evolution(version_records):
             {
                 "ts": record.get("ts"),
                 "event": record.get("event"),
+                "evolution_action": record.get("evolution_action"),
                 "target_category": record.get("target_category"),
                 "root_cause_type": record.get("root_cause_type"),
                 "confidence": record.get("confidence"),
@@ -231,8 +232,9 @@ def render_latest_patch(patch):
         return
     c1, c2, c3 = st.columns(3)
     c1.metric("错误类型", str(patch.get("root_cause_type") or patch.get("error_category") or "-"))
-    c2.metric("目标类别", str(patch.get("target_category") or "-"))
+    c2.metric("进化动作", str(patch.get("evolution_action") or "-"))
     c3.metric("置信度", f"{float(patch.get('confidence') or 0):.2f}")
+    st.caption(f"目标类别: {patch.get('target_category') or '-'}")
     st.write("根因分析")
     st.write(patch.get("root_cause_analysis") or "-")
     st.write("建议规则")

@@ -71,6 +71,14 @@ def load_config(config_path="adapters/ticket_config.yaml"):
         return deep_merge_defaults(yaml.safe_load(f) or {})
 
 
+def load_prompt_policy():
+    file_path = "memory/PROMPT_POLICY.md"
+    if not os.path.exists(file_path):
+        return ""
+    with open(file_path, "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Self-Evolving Harness runner")
     parser.add_argument("--mode", choices=["demo", "benchmark", "evolve-demo"], default=None, help="demo: closed-loop run; benchmark: one-pass evaluation; evolve-demo: deterministic evolution showcase")
@@ -129,6 +137,8 @@ def build_batch_execution_prompt(config, current_skills, few_shots, batch_texts,
     schema_str = json.dumps(config["schema"], ensure_ascii=False, separators=(",", ":"))
     meta_prompt = "Extra caution: inspect implicit logic and sarcasm.\n" if meta_intervention else ""
     skills_block = current_skills.strip() if current_skills else "No matched category-specific skills."
+    prompt_policy = load_prompt_policy()
+    prompt_policy_block = f"\nPrompt policy:\n{prompt_policy}\n" if prompt_policy else ""
     few_shot_block = f"\nExamples:\n{few_shots.strip()}\n" if few_shots else ""
     batch_text_str = "\n".join(f"{idx}. {text}" for idx, text in enumerate(batch_texts, 1))
     return f"""Task: parse customer complaint texts into structured JSON.
@@ -136,7 +146,7 @@ Output compact JSON only: one array with exactly {len(batch_texts)} objects in t
 Each object must include exactly these keys: core_intent, urgency_level, entities, summary.
 Schema: {schema_str}
 Rules: {skills_block}
-{meta_prompt}{few_shot_block}Inputs:
+{prompt_policy_block}{meta_prompt}{few_shot_block}Inputs:
 {batch_text_str}
 """
 
@@ -268,7 +278,7 @@ def prepare_demo_env(reset_state=False):
     os.makedirs("adapters", exist_ok=True)
     if not reset_state:
         return
-    for file in ["memory/metrics.csv", "memory/latest_patch.json", "memory/token_usage.csv", "memory/llm_cache.jsonl"]:
+    for file in ["memory/metrics.csv", "memory/latest_patch.json", "memory/token_usage.csv", "memory/llm_cache.jsonl", "memory/PROMPT_POLICY.md", "memory/PROMPT_POLICY_backup.md"]:
         if os.path.exists(file):
             os.remove(file)
     for file in ["memory/SKILL.md", "memory/examples.json", "memory/SKILL_backup.md"]:

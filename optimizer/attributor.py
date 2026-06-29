@@ -36,6 +36,7 @@ Required JSON shape:
 {{
   "error_category": "...",
   "root_cause_type": "one of json_format_error/schema_field_error/intent_routing_error/urgency_miscalibration/entity_extraction_error/context_missing/logic_conflict/domain_knowledge_gap",
+  "evolution_action": "one of prompt_patch/skill_patch/few_shot_patch",
   "target_category": "...",
   "confidence": 0.0,
   "affected_fields": ["..."],
@@ -75,9 +76,11 @@ Required JSON shape:
         target_category = ground_truth.get("core_intent", "\u9000\u6b3e\u7ea0\u7eb7")
         root_cause_type = self._classify_root_cause(eval_result)
         affected_fields = self._affected_fields(eval_result)
+        evolution_action = self._select_evolution_action(root_cause_type, affected_fields)
         return {
             "error_category": "rule_engine_bad_case_attribution",
             "root_cause_type": root_cause_type,
+            "evolution_action": evolution_action,
             "target_category": target_category,
             "confidence": self._confidence(root_cause_type, eval_result),
             "affected_fields": affected_fields,
@@ -87,6 +90,8 @@ Required JSON shape:
             "risk_flags": self._risk_flags(root_cause_type, affected_fields),
             "source_error": eval_result.get("error_reason", ""),
             "input_excerpt": str(current_input)[:120],
+            "example_input": str(current_input),
+            "example_output": ground_truth,
         }
 
     def _normalize_patch(self, patch_data, eval_result, current_input, prediction_text, ground_truth):
@@ -95,6 +100,7 @@ Required JSON shape:
         if not isinstance(affected_fields, list):
             affected_fields = [str(affected_fields)]
         patch_data["root_cause_type"] = root_cause_type
+        patch_data["evolution_action"] = patch_data.get("evolution_action") or self._select_evolution_action(root_cause_type, affected_fields)
         patch_data["target_category"] = patch_data.get("target_category") or ground_truth.get("core_intent")
         patch_data["confidence"] = float(patch_data.get("confidence") or self._confidence(root_cause_type, eval_result))
         patch_data["affected_fields"] = affected_fields
@@ -102,7 +108,16 @@ Required JSON shape:
         patch_data.setdefault("risk_flags", self._risk_flags(root_cause_type, affected_fields))
         patch_data.setdefault("source_error", eval_result.get("error_reason", ""))
         patch_data.setdefault("input_excerpt", str(current_input)[:120])
+        patch_data.setdefault("example_input", str(current_input))
+        patch_data.setdefault("example_output", ground_truth)
         return patch_data
+
+    def _select_evolution_action(self, root_cause_type, affected_fields):
+        if root_cause_type in {"json_format_error", "schema_field_error"}:
+            return "prompt_patch"
+        if root_cause_type == "entity_extraction_error" or "entities" in affected_fields:
+            return "few_shot_patch"
+        return "skill_patch"
 
     def _classify_root_cause(self, eval_result):
         error_text = str(eval_result.get("error_reason", ""))
