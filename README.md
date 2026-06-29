@@ -62,6 +62,12 @@ python main_loop.py --mode llm-evolve --sample-size 60 --epochs 3
 
 This mode uses the configured API for batch extraction, bad-case attribution, and patch generation. It keeps the token-saving router/cache/tip-memory safeguards, but it does not use the local benchmark fast path.
 
+Fresh 100-sample evolution demo from empty runtime memory:
+
+```powershell
+python main_loop.py --mode llm-evolve --sample-size 100 --epochs 3 --batch-size 8 --max-workers 2 --reset-state
+```
+
 To force one bad case while still using the real LLM for reflection and patch generation:
 
 ```powershell

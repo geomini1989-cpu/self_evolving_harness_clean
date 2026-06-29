@@ -101,6 +101,7 @@ def parse_args():
     parser.add_argument("--llm-benchmark", action="store_true", help="Use the real model in benchmark mode instead of local skill execution")
     parser.add_argument("--force-evolution-demo", action="store_true", help="Force one bad-case attribution and skill evolution step")
     parser.add_argument("--use-llm-evolution", action="store_true", help="Use real LLM attribution and rule generation instead of local rule evolution helpers")
+    parser.add_argument("--reset-state", action="store_true", help="Clear runtime memory/cache files before this run")
     return parser.parse_args()
 
 
@@ -156,6 +157,8 @@ def apply_cli_overrides(config, args):
         runtime["max_workers"] = args.max_workers
     if args.no_evolution:
         runtime["enable_evolution"] = False
+    if args.reset_state:
+        runtime["reset_state"] = True
     return config
 
 
@@ -304,10 +307,26 @@ def prepare_demo_env(reset_state=False):
     os.makedirs("adapters", exist_ok=True)
     if not reset_state:
         return
-    for file in ["memory/metrics.csv", "memory/latest_patch.json", "memory/token_usage.csv", "memory/llm_cache.jsonl", "memory/PROMPT_POLICY.md", "memory/PROMPT_POLICY_backup.md", "memory/tips.jsonl"]:
-        if os.path.exists(file):
-            os.remove(file)
-    for file in ["memory/SKILL.md", "memory/examples.json", "memory/SKILL_backup.md"]:
+    print("[Harness] Resetting runtime memory and cache files.")
+    reset_files = [
+        "memory/metrics.csv",
+        "memory/latest_patch.json",
+        "memory/token_usage.csv",
+        "memory/llm_cache.jsonl",
+        "memory/PROMPT_POLICY.md",
+        "memory/PROMPT_POLICY_backup.md",
+        "memory/tips.jsonl",
+        "memory/SKILL.md",
+        "memory/SKILL_backup.md",
+        "memory/examples.json",
+        "memory/examples_backup.json",
+        "memory/saf_traces.jsonl",
+        "memory/skill_versions.jsonl",
+        "memory/rejected_skills.jsonl",
+        "memory/transfer_report.json",
+        "memory/transfer_traces.jsonl",
+    ]
+    for file in reset_files:
         if os.path.exists(file):
             os.remove(file)
 
