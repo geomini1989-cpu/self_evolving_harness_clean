@@ -30,6 +30,8 @@ runtime:
   use_rule_evolver: false
   enable_evolution: true
   reset_state: false
+  execution_max_tokens_floor: 240
+  execution_max_tokens_per_item: 90
 
 cache:
   enabled: true

@@ -253,6 +253,8 @@ Copy-Item .env.example .env
 
 ```text
 API_KEY=你的 DashScope 或 OpenAI-compatible API Key
+LLM_TIMEOUT_SECONDS=90
+LLM_OFFLINE=0
 ```
 
 如果 `API_KEY` 为空，系统会提示：
@@ -264,6 +266,13 @@ API_KEY=你的 DashScope 或 OpenAI-compatible API Key
 这不是报错，而是离线演示模式。离线模式会使用本地规则模拟 LLM 输出，适合快速展示流程；真实多轮自进化需要填入有效 API_KEY。
 
 注意：不要提交 `.env`。`.env.example` 只应保留占位符。
+
+如果只想做本地 smoke test、不消耗 API Token，可以临时设置：
+
+```powershell
+$env:LLM_OFFLINE="1"
+python main_loop.py --mode demo --sample-size 8 --epochs 1 --batch-size 4 --max-workers 1 --no-evolution
+```
 
 ## 运行模式
 

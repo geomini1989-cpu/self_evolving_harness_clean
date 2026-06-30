@@ -16,17 +16,25 @@ load_dotenv(PROJECT_ROOT / ".env", encoding="utf-8-sig")
 class BaseLLMClient:
     def __init__(self, cache_enabled=True, cache_path="memory/llm_cache.jsonl", usage_log_path="memory/token_usage.csv"):
         api_key = os.getenv("API_KEY")
-        self.offline_mode = not api_key
+        force_offline = os.getenv("LLM_OFFLINE", "").strip().lower() in {"1", "true", "yes", "on"}
+        self.offline_mode = force_offline or not api_key
         self.client = None
 
         if self.offline_mode:
-            print("[LLM] API_KEY not found. Running in offline demo mode. Add API_KEY to .env to enable the real model.")
+            reason = "LLM_OFFLINE is enabled" if force_offline else "API_KEY not found"
+            print(f"[LLM] {reason}. Running in offline demo mode. Add API_KEY to .env to enable the real model.")
         else:
-            custom_http_client = httpx.Client(limits=httpx.Limits(max_connections=100, max_keepalive_connections=50))
+            self.timeout_seconds = float(os.getenv("LLM_TIMEOUT_SECONDS", "90"))
+            custom_http_client = httpx.Client(
+                timeout=httpx.Timeout(self.timeout_seconds, connect=15.0),
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
+            )
             self.client = OpenAI(api_key=api_key, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", http_client=custom_http_client)
-        self.cheap_model = os.getenv("CHEAP_MODEL", "kimi-k2.6")
-        self.default_model = os.getenv("DEFAULT_MODEL", "kimi-k2.6")
-        self.smart_model = os.getenv("SMART_MODEL", "kimi-k2.6")
+        if not hasattr(self, "timeout_seconds"):
+            self.timeout_seconds = 0
+        self.cheap_model = os.getenv("CHEAP_MODEL", "kimi-k2.7-code")
+        self.default_model = os.getenv("DEFAULT_MODEL", "kimi-k2.7-code")
+        self.smart_model = os.getenv("SMART_MODEL", "kimi-k2.7-code")
         self.cache_enabled = cache_enabled
         self.cache_path = cache_path
         self.usage_log_path = usage_log_path

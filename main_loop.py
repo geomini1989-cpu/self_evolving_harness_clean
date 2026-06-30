@@ -48,6 +48,8 @@ DEFAULT_RUNTIME = {
     "use_rule_evolver": False,
     "enable_evolution": True,
     "reset_state": False,
+    "execution_max_tokens_floor": 240,
+    "execution_max_tokens_per_item": 90,
 }
 DEFAULT_CACHE = {"enabled": True, "path": "memory/llm_cache.jsonl"}
 DEFAULT_EVOLUTION = {
@@ -177,8 +179,9 @@ def build_batch_execution_prompt(config, current_skills, few_shots, batch_texts,
     few_shot_block = f"\nExamples:\n{few_shots.strip()}\n" if few_shots else ""
     batch_text_str = "\n".join(f"{idx}. {text}" for idx, text in enumerate(batch_texts, 1))
     return f"""Task: parse customer complaint texts into structured JSON.
-Output compact JSON only: one array with exactly {len(batch_texts)} objects in the same order as inputs. No Markdown, no explanation.
+Output compact JSON only: one array with exactly {len(batch_texts)} objects in the same order as inputs. No Markdown, no explanation, no repeated input text.
 Each object must include exactly these keys: core_intent, urgency_level, entities, summary.
+Keep summary <= 20 Chinese chars. Keep entities as a short array. Use only schema labels for core_intent and urgency_level.
 Schema: {schema_str}
 Rules: {skills_block}
 {prompt_policy_block}{meta_prompt}{few_shot_block}Inputs:
@@ -193,6 +196,13 @@ def build_execution_prompt(config, current_skills, few_shots, input_text, meta_i
 def chunk_dataset(dataset, batch_size=8):
     for i in range(0, len(dataset), batch_size):
         yield dataset[i:i + batch_size]
+
+
+def execution_max_tokens(config, item_count):
+    runtime = config.get("runtime", {})
+    floor = int(runtime.get("execution_max_tokens_floor", 240))
+    per_item = int(runtime.get("execution_max_tokens_per_item", 90))
+    return max(floor, per_item * max(1, item_count))
 
 
 def log_metrics(epoch, f1_score, llm_stats=None, elapsed_ms=None):
@@ -432,7 +442,20 @@ def run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batc
     current_skills = memory_bank.get_skills_by_categories(active_categories)
     few_shots = memory_bank.get_few_shots(batch_inputs[0], k=1, enabled=enable_few_shots)
     prompt = build_batch_execution_prompt(config, current_skills, few_shots, batch_inputs, meta_intervention)
-    prediction_text = llm.generate(prompt, temperature=0.0, model_type="default", use_cache=True, max_tokens=max(500, 220 * len(batch_inputs)))
+    try:
+        prediction_text = llm.generate(
+            prompt,
+            temperature=0.0,
+            model_type="default",
+            use_cache=True,
+            max_tokens=execution_max_tokens(config, len(batch_inputs)),
+        )
+    except Exception as exc:
+        if len(batch_data) > 1:
+            midpoint = len(batch_data) // 2
+            print(f"[Batch] LLM request failed for batch size {len(batch_data)}: {exc}; retrying as smaller batches.")
+            return run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data[:midpoint], meta_intervention, enable_few_shots, enable_f1_postprocess, enable_rule_fast_path) + run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data[midpoint:], meta_intervention, enable_few_shots, enable_f1_postprocess, enable_rule_fast_path)
+        prediction_text = "{}"
     parsed_array = evaluator._extract_json_from_text(prediction_text)
     if isinstance(parsed_array, dict):
         for key in ["items", "results", "data", "outputs"]:
@@ -454,7 +477,7 @@ def run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batc
         }]
     midpoint = len(batch_data) // 2
     print(f"[Batch] Invalid JSON array for batch size {len(batch_data)}; retrying as smaller batches.")
-    return run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data[:midpoint], meta_intervention, enable_few_shots, enable_f1_postprocess) + run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data[midpoint:], meta_intervention, enable_few_shots, enable_f1_postprocess)
+    return run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data[:midpoint], meta_intervention, enable_few_shots, enable_f1_postprocess, enable_rule_fast_path) + run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data[midpoint:], meta_intervention, enable_few_shots, enable_f1_postprocess, enable_rule_fast_path)
 
 
 def run_harness_loop(config=None):
@@ -486,12 +509,15 @@ def run_harness_loop(config=None):
     enable_evolution = bool(runtime.get("enable_evolution", True))
     estimated_batches = (len(golden_dataset) + batch_size - 1) // batch_size
     print(f"[Harness] Batch size: {batch_size} | Estimated model batches per epoch: {estimated_batches} | Epochs: {epochs}")
+    print(f"[Harness] Execution max_tokens per batch: up to {execution_max_tokens(config, batch_size)} for batch_size={batch_size}.")
     if enable_rule_fast_path:
         print("[Harness] Benchmark fast path: local skill execution is enabled; LLM calls should stay near zero.")
     else:
         print("[Harness] Execution backend: LLM batch extraction.")
+        if getattr(llm, "timeout_seconds", 0):
+            print(f"[Harness] LLM request timeout: {int(llm.timeout_seconds)}s; timed-out batches will split and retry smaller.")
         if getattr(llm, "offline_mode", False):
-            print("[Harness] API_KEY is missing or not loaded; LLM calls will use offline demo mode.")
+            print("[Harness] Offline mode is active; LLM calls will use the local demo engine.")
     if enable_evolution:
         attribution_backend = "rule" if bool(runtime.get("use_rule_attributor", False)) else "LLM"
         evolver_backend = "rule" if bool(runtime.get("use_rule_evolver", False)) else "LLM"
@@ -505,8 +531,11 @@ def run_harness_loop(config=None):
         results = []
         memory_bank.refresh_skills()
         meta_intervention = stuck_counter >= 2
+        batches = list(chunk_dataset(golden_dataset, batch_size=batch_size))
+        completed_batches = 0
+        print(f"[Epoch {epoch}] Dispatching {len(batches)} batches with max_workers={max_workers}.")
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
+            futures = {
                 executor.submit(
                     run_batch_with_split,
                     llm,
@@ -519,14 +548,19 @@ def run_harness_loop(config=None):
                     enable_few_shots,
                     enable_f1_postprocess,
                     enable_rule_fast_path,
-                )
-                for batch_data in chunk_dataset(golden_dataset, batch_size=batch_size)
-            ]
+                ): idx
+                for idx, batch_data in enumerate(batches, 1)
+            }
             for future in concurrent.futures.as_completed(futures):
+                batch_idx = futures[future]
+                completed_batches += 1
                 try:
-                    results.extend(future.result())
+                    batch_results = future.result()
+                    results.extend(batch_results)
+                    elapsed_s = int(time.time() - epoch_started)
+                    print(f"[Epoch {epoch}] Batch {completed_batches}/{len(batches)} done (submitted #{batch_idx}, rows={len(batch_results)}, elapsed_s={elapsed_s}).")
                 except Exception as exc:
-                    print(f"[Batch] Generation failed: {exc}")
+                    print(f"[Epoch {epoch}] Batch {completed_batches}/{len(batches)} failed (submitted #{batch_idx}): {exc}")
         for result in results:
             eval_result = result["eval_result"]
             epoch_total_f1 += eval_result["f1_score"]
