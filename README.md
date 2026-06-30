@@ -15,6 +15,131 @@
 - 防退化机制：每次候选更新都经过置信度门控、bad-case 小样本验证、经验回放和必要时全量回归；不达标自动回滚。
 - 跨领域迁移：通过统一 SAF 抽象和 `tools/transfer_test_runner.py` 演示文本、图像元信息、语音转写、推荐流等同类任务的迁移能力。
 
+## 创新点
+
+### 1. 冻结模型下的外部自进化框架
+
+传统方案往往依赖微调、RAG 堆上下文或人工修改 Prompt。本项目把优化能力放在模型外层：基座模型参数保持冻结，由 Harness 自动完成执行、评估、反思、进化和回归。这样既符合小算力约束，也能清楚证明指标提升来自框架策略，而不是重新训练模型。
+
+### 2. 双层记忆机制
+
+项目把记忆分为短期和长期两层：
+
+- 短期记忆：`optimizer/tip_memory.py` 先缓存 bad case 修复经验，避免一次偶然失败就污染长期规则。
+- 长期记忆：只有高置信或重复出现的经验，才晋升为 `memory/SKILL.md`、`memory/PROMPT_POLICY.md` 或 `memory/examples.json`。
+
+这种设计兼顾学习速度和安全性，能体现“系统持续进化”，也能避免 Skill 盲目膨胀。
+
+### 3. Prompt / Skill / Few-shot 联动进化
+
+进化动作不是单一追加 Prompt，而是根据根因自动选择：
+
+- `prompt_patch`：适合 schema 约束、输出格式、字段解释类问题。
+- `skill_patch`：适合稳定业务知识、类别边界和领域规则。
+- `few_shot_patch`：适合局部样例、低风险修复和相似 case 迁移。
+
+这比单纯维护一个大 Prompt 更细粒度，也更容易做回滚和成本控制。
+
+### 4. 防退化闭环
+
+每个候选补丁写入后不会立即永久生效，而是进入回归门控：
+
+1. 先验证当前 bad-case 相关样本。
+2. 再验证 replay set，防止修复局部破坏全局。
+3. 风险较高或接近阈值时再触发更大范围回归。
+4. F1 下降超过 `f1_tolerance` 自动回滚。
+
+这对应比赛要求中的“避免灾难性遗忘”和“版本回滚”。
+
+### 5. Token-Aware Harness
+
+本项目不是简单调用 LLM，而是把 Token 成本作为一等指标来优化：
+
+- 本地类别路由替代 LLM scout。
+- 按类别检索 Skill，避免全量注入。
+- 默认关闭 Few-shot，只在必要时启用。
+- 对确定性调用做磁盘缓存。
+- Dashboard 直接展示调用数、Token、缓存命中和耗时。
+
+因此系统既能展示 F1，也能展示成本曲线。
+
+### 6. SAF 跨领域统一抽象
+
+通过 `adapters/saf.py`，不同任务被统一为：
+
+```text
+State -> Action -> Feedback
+```
+
+主循环不绑定某一种数据模态，领域差异由 adapter 承担。`tools/transfer_test_runner.py` 已用文本、图像元信息、语音转写和推荐流做了轻量迁移验证，体现“技术方案可快速迁移到同类任务场景”。
+
+## 优化点
+
+### 1. Token 消耗优化
+
+已完成的 Token 优化包括：
+
+- 移除批处理前的 LLM scout 调用，减少每轮固定额外请求。
+- 使用 `MemoryBank.route_categories()` 做本地关键词/正则路由。
+- 使用 `MemoryBank.get_skills_by_categories()` 只注入命中类别 Skill。
+- Prompt 改为短字段协议和紧凑 JSON 数组输出。
+- `BaseLLMClient` 增加磁盘缓存，key 包含模型、温度、max_tokens 和 prompt hash。
+- cache hit 时直接复用历史结果，并记录为 0 Token。
+- Few-shot 默认关闭，避免每个 batch 重复注入样例。
+- `benchmark` 模式提供本地 fast path，可用于全量低成本指标报告。
+
+### 2. 批处理延迟优化
+
+已完成的延迟优化包括：
+
+- `batch_size`、`max_workers`、`epochs`、`sample_size` 全部命令行可配置。
+- 批量请求替代逐条请求，减少 API 往返。
+- 并发执行 batch，提高吞吐。
+- JSON 解析失败时自动拆小批重试，而不是整轮失败。
+- 默认 benchmark 只跑 1 轮，适合快速评估全量数据。
+- Dashboard 记录每轮 `elapsed_ms`，便于对比优化前后耗时。
+
+### 3. F1 指标优化
+
+已完成的 F1 优化包括：
+
+- 字段级 F1 评估，能精细定位 `core_intent`、`urgency_level`、`entities`、`summary` 的错误。
+- `F1PostProcessor` 做 schema 修复、紧急程度纠正、实体补全和摘要裁剪。
+- bad case 自动进入归因流程，生成可执行补丁。
+- 对局部错误优先采用 Few-shot 修复，降低破坏全局策略的风险。
+- 对稳定类别边界错误沉淀为 Skill，提升后续同类样本表现。
+
+### 4. 自进化可靠性优化
+
+已完成的可靠性优化包括：
+
+- 置信度门控：低置信补丁不写入长期记忆。
+- 高风险识别：涉及广泛 schema 或多字段冲突的补丁会被更严格审查。
+- rejected buffer：重复失败的候选不再反复尝试。
+- SkillRepo 治理：限制每类 Skill 数量，做去重和淘汰。
+- 版本日志：所有 accepted、rejected、rolled_back、curated 事件写入 `skill_versions.jsonl`。
+- 回滚机制：补丁导致样本或回放 F1 下降时自动恢复旧资产。
+
+### 5. 可观测性优化
+
+已完成的观测优化包括：
+
+- `memory/metrics.csv`：记录每轮 F1、调用数、Token、缓存命中、耗时。
+- `memory/token_usage.csv`：记录每次 LLM 调用的 prompt/completion/total token。
+- `memory/saf_traces.jsonl`：记录状态、动作、反馈轨迹。
+- Streamlit Dashboard 汇总曲线、事件分布、记忆资产和迁移结果。
+- README 提供低成本演示、正式演示和全量 benchmark 三套命令。
+
+### 6. 工程可维护性优化
+
+已完成的工程优化包括：
+
+- 主循环、LLM 客户端、评估器、记忆库、归因器、进化器模块化拆分。
+- 配置项集中在 `adapters/ticket_config.yaml`，命令行可覆盖。
+- `.env.example` 移除真实 key，仅保留占位符。
+- 运行态 memory 与代码分离，便于选择“从 0 演示”或“保留学习成果演示”。
+- 跨领域 Transfer Runner 独立在 `tools/` 下，不污染主任务逻辑。
+
 ## 论文启发
 
 实现思路参考以下方向，并落到工程组件中：
