@@ -24,7 +24,7 @@ THEME_COLORS = {
 st.markdown(
     """
     <style>
-    .block-container { padding-top: 0.7rem; padding-bottom: 2rem; }
+    .block-container { padding-top: 1.35rem; padding-bottom: 2rem; }
     h1, h2, h3 { letter-spacing: 0; }
     div[data-testid="stMetric"] {
         background: #ffffff;
@@ -36,17 +36,20 @@ st.markdown(
     .hero-band {
         border: 1px solid #cbd8ea;
         border-radius: 8px;
-        padding: 16px 22px;
+        padding: 24px 24px 18px 24px;
         background:
             linear-gradient(90deg, rgba(255,255,255,0.95) 0%, rgba(241,247,255,0.96) 58%, rgba(246,248,241,0.96) 100%);
         margin-bottom: 16px;
+        overflow: visible;
     }
     .hero-title {
-        font-size: 32px;
-        line-height: 1.15;
-        font-weight: 780;
+        font-size: 30px;
+        line-height: 1.45;
+        font-weight: 760;
         color: #0f172a;
-        margin-bottom: 8px;
+        margin: 0 0 6px 0;
+        padding-top: 2px;
+        overflow: visible;
     }
     .hero-subtitle {
         color: #334155;
@@ -77,7 +80,12 @@ st.markdown(
         color: #e2e8f0;
         font-family: Consolas, "Courier New", monospace;
         font-size: 12px;
-        display: inline-block;
+        line-height: 1.6;
+        display: block;
+        width: fit-content;
+        max-width: 100%;
+        white-space: normal;
+        overflow-wrap: anywhere;
     }
     .insight-box {
         border: 1px solid #d7dee9;
