@@ -24,7 +24,7 @@ THEME_COLORS = {
 st.markdown(
     """
     <style>
-    .block-container { padding-top: 1.4rem; padding-bottom: 2rem; }
+    .block-container { padding-top: 0.7rem; padding-bottom: 2rem; }
     h1, h2, h3 { letter-spacing: 0; }
     div[data-testid="stMetric"] {
         background: #ffffff;
@@ -36,7 +36,7 @@ st.markdown(
     .hero-band {
         border: 1px solid #cbd8ea;
         border-radius: 8px;
-        padding: 20px 24px;
+        padding: 16px 22px;
         background:
             linear-gradient(90deg, rgba(255,255,255,0.95) 0%, rgba(241,247,255,0.96) 58%, rgba(246,248,241,0.96) 100%);
         margin-bottom: 16px;
@@ -68,6 +68,25 @@ st.markdown(
         color: #334155;
         font-size: 12px;
         font-weight: 600;
+    }
+    .command-strip {
+        margin-top: 10px;
+        padding: 8px 10px;
+        border-radius: 6px;
+        background: #0f172a;
+        color: #e2e8f0;
+        font-family: Consolas, "Courier New", monospace;
+        font-size: 12px;
+        display: inline-block;
+    }
+    .insight-box {
+        border: 1px solid #d7dee9;
+        border-radius: 8px;
+        padding: 12px 14px;
+        background: #fbfdff;
+        color: #334155;
+        margin: 8px 0 12px 0;
+        line-height: 1.65;
     }
     .section-note {
         color: #64748b;
@@ -229,13 +248,25 @@ def render_status_pills(summary):
     st.markdown("".join(labels), unsafe_allow_html=True)
 
 
-def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_text, prompt_policy, examples, transfer_report):
+def f1_run_summary(metrics_df):
+    if metrics_df.empty or "f1_score" not in metrics_df.columns:
+        return 0.0, 0.0, 0.0, 0.0
+    values = pd.to_numeric(metrics_df["f1_score"], errors="coerce").dropna()
+    if values.empty:
+        return 0.0, 0.0, 0.0, 0.0
+    first = float(values.iloc[0])
+    current = float(values.iloc[-1])
+    peak = float(values.max())
+    return first, current, peak, current - first
+
+
+def render_global_header():
     st.markdown(
         """
         <div class="hero-band">
             <div class="hero-title">自进化智能体评测与优化平台</div>
             <div class="hero-subtitle">
-            面向题目一算法方向：冻结基座模型参数，通过批量执行、自动评估、根因反思、低风险进化和回归门控，验证 Agent 在低 Token 成本下的持续优化能力。
+            冻结基座模型参数，通过批量执行、自动评估、根因反思、低风险进化和回归门控，验证 Agent 在低 Token 成本下的持续优化能力。
             </div>
             <div class="hero-tags">
                 <span class="hero-tag">SkillOS 技能记忆</span>
@@ -244,11 +275,14 @@ def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_t
                 <span class="hero-tag">Few-shot 轻量晋升</span>
                 <span class="hero-tag">防退化回滚</span>
             </div>
+            <div class="command-strip">推荐正式演示：python main_loop.py --mode llm-evolve --sample-size 300 --epochs 6 --batch-size 8 --max-workers 2 --reset-state</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
+
+def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_text, prompt_policy, examples, transfer_report):
     latest_f1 = metric_value(metrics_df, "f1_score")
     latest_calls = metric_value(metrics_df, "llm_calls")
     latest_tokens = metric_value(metrics_df, "total_tokens")
@@ -256,23 +290,39 @@ def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_t
     cache_hits = metric_value(metrics_df, "cache_hits")
     accepted, rolled_back, candidates = event_summary(versions)
     transfer_score = float(transfer_report.get("avg_score") or 0.0) if transfer_report else 0.0
+    first_f1, current_f1, peak_f1, delta_f1 = f1_run_summary(metrics_df)
+    examples_count = len(examples) if isinstance(examples, list) else 0
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("最新 F1", f"{latest_f1:.2f}")
-    c2.metric("LLM 调用", f"{int(latest_calls)}")
-    c3.metric("Token", f"{int(latest_tokens)}")
-    c4.metric("缓存命中", f"{int(cache_hits)}")
-    c5.metric("耗时 ms", f"{int(latest_elapsed)}")
-    c6.metric("迁移分", f"{transfer_score:.2f}")
+    c1.metric("当前 F1", f"{current_f1:.3f}")
+    c2.metric("峰值 F1", f"{peak_f1:.3f}")
+    c3.metric("较首轮", f"{delta_f1:+.3f}")
+    c4.metric("Few-shot 资产", f"{examples_count}")
+    c5.metric("回滚保护", f"{rolled_back}")
+    c6.metric("Token", f"{int(latest_tokens)}")
 
     artifact_counts = artifact_summary(skill_text, prompt_policy, examples, tips, rejected)
     render_status_pills(
         {
+            "LLM 调用": int(latest_calls),
+            "缓存命中": int(cache_hits),
+            "耗时 ms": int(latest_elapsed),
+            "迁移分": f"{transfer_score:.2f}",
             "候选补丁": candidates,
             "已接受": accepted,
             "已回滚": rolled_back,
             **artifact_counts,
         }
+    )
+    st.markdown(
+        f"""
+        <div class="insight-box">
+        当前实验首轮 F1={first_f1:.3f}，峰值 F1={peak_f1:.3f}，当前 F1={current_f1:.3f}。
+        若曲线末段小幅回落，应结合回滚次数和 Few-shot 资产一起看：系统正在优先沉淀低风险样例，并拒绝会破坏回归集的强规则补丁。
+        Skill=0 不代表没有进化，当前策略优先使用 Few-shot 轻量晋升，Skill 只在重复稳定错误出现后作为强规则资产写入。
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
     left, right = st.columns([1.25, 1])
@@ -285,10 +335,11 @@ def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_t
                 x="run_index",
                 y="f1_score",
                 markers=True,
-                title="F1 演化曲线",
+                title="F1 演化曲线（关注峰值、当前值和回滚保护）",
                 color_discrete_sequence=["#2563eb"],
             )
             fig.update_layout(height=330, margin=dict(l=12, r=12, t=48, b=12))
+            fig.update_yaxes(range=[0.8, 1.0])
             plot_chart(fig)
         else:
             st.info("尚未生成 metrics.csv")
@@ -373,23 +424,33 @@ def render_memory(skill_text, prompt_policy, examples, tips, rejected):
     buffered = sum(1 for tip in tips if tip.get("status") == "buffered")
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Skill", len(skill_df))
-    c2.metric("Few-shot", example_count)
+    c1.metric("强规则 Skill", len(skill_df))
+    c2.metric("Few-shot 学习样例", example_count)
     c3.metric("Prompt Policy", prompt_count)
     c4.metric("Promoted Tip", promoted)
     c5.metric("Rejected", len(rejected))
 
+    st.markdown(
+        """
+        <div class="insight-box">
+        当前采用 Few-shot-first 策略：先把 Bad Case 固化为低风险样例，只有重复稳定的错误模式才晋升为强规则 Skill。
+        因此 Few-shot 数量是主要自进化产物，Skill=0 表示系统尚未接受需要全局生效的强规则。
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     left, right = st.columns(2)
     with left:
-        st.write("SkillRepo")
+        st.write("强规则 SkillRepo（可选晋升）")
         if skill_df.empty:
-            st.info("暂无已接受 Skill")
+            st.info("暂无已接受强规则 Skill。当前已有 Few-shot 学习资产，系统仍在采用更低风险的样例记忆。")
         else:
             counts = skill_df.groupby("category").size().reset_index(name="count")
             plot_chart(px.bar(counts, x="category", y="count", title="Skill 按类别分布"))
             show_table(skill_df[["category", "title", "chars", "approx_tokens"]], hide_index=True)
     with right:
-        st.write("Few-shot 示例")
+        st.write("Few-shot 学习样例（主要长期记忆）")
         if not isinstance(examples, list) or not examples:
             st.info("暂无 Few-shot 示例")
         else:
@@ -533,6 +594,8 @@ skill_text = read_text("SKILL.md")
 prompt_policy = read_text("PROMPT_POLICY.md")
 examples = read_json("examples.json", default=[])
 latest_patch = read_json("latest_patch.json")
+
+render_global_header()
 
 tab_demo, tab_evolution, tab_memory, tab_transfer, tab_trace, tab_patch = st.tabs(
     ["总览", "自进化闭环", "记忆资产", "迁移验证", "执行轨迹", "归因详情"]
