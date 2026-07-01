@@ -234,6 +234,14 @@ def event_summary(version_records):
     return accepted, rolled_back, candidates
 
 
+def patch_rate_summary(version_records):
+    accepted, rolled_back, candidates = event_summary(version_records)
+    denominator = candidates or (accepted + rolled_back)
+    accept_rate = accepted / denominator if denominator else 0.0
+    rollback_rate = rolled_back / denominator if denominator else 0.0
+    return accept_rate, rollback_rate
+
+
 def artifact_summary(skill_text, prompt_policy, examples, tips, rejected):
     skill_count = len(parse_skill_blocks(skill_text))
     example_count = len(examples) if isinstance(examples, list) else 0
@@ -296,29 +304,39 @@ def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_t
     latest_tokens = metric_value(metrics_df, "total_tokens")
     latest_elapsed = metric_value(metrics_df, "elapsed_ms")
     cache_hits = metric_value(metrics_df, "cache_hits")
+    exact_match_rate = metric_value(metrics_df, "exact_match_rate")
+    tokens_per_sample = metric_value(metrics_df, "tokens_per_sample")
+    latency_per_sample_ms = metric_value(metrics_df, "latency_per_sample_ms")
+    cache_hit_rate = metric_value(metrics_df, "cache_hit_rate")
     accepted, rolled_back, candidates = event_summary(versions)
+    accept_rate, rollback_rate = patch_rate_summary(versions)
     transfer_score = float(transfer_report.get("avg_score") or 0.0) if transfer_report else 0.0
     first_f1, current_f1, peak_f1, delta_f1 = f1_run_summary(metrics_df)
     examples_count = len(examples) if isinstance(examples, list) else 0
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("当前 F1", f"{current_f1:.3f}")
-    c2.metric("峰值 F1", f"{peak_f1:.3f}")
-    c3.metric("较首轮", f"{delta_f1:+.3f}")
-    c4.metric("Few-shot 资产", f"{examples_count}")
-    c5.metric("回滚保护", f"{rolled_back}")
-    c6.metric("Token", f"{int(latest_tokens)}")
+    c2.metric("Exact Match", f"{exact_match_rate:.1%}")
+    c3.metric("Token / Sample", f"{tokens_per_sample:.1f}")
+    c4.metric("Latency / Sample", f"{latency_per_sample_ms:.0f} ms")
+    c5.metric("Patch Accept", f"{accept_rate:.1%}")
+    c6.metric("Rollback", f"{rollback_rate:.1%}")
 
     artifact_counts = artifact_summary(skill_text, prompt_policy, examples, tips, rejected)
     render_status_pills(
         {
             "LLM 调用": int(latest_calls),
             "缓存命中": int(cache_hits),
+            "缓存命中率": f"{cache_hit_rate:.1%}",
             "耗时 ms": int(latest_elapsed),
+            "总 Token": int(latest_tokens),
+            "峰值 F1": f"{peak_f1:.3f}",
+            "较首轮 F1": f"{delta_f1:+.3f}",
             "迁移分": f"{transfer_score:.2f}",
             "候选补丁": candidates,
             "已接受": accepted,
             "已回滚": rolled_back,
+            "Few-shot 资产": examples_count,
             **artifact_counts,
         }
     )
@@ -338,13 +356,19 @@ def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_t
         if not metrics_df.empty:
             chart_df = metrics_df.copy()
             chart_df["run_index"] = range(1, len(chart_df) + 1)
+            quality_cols = [col for col in ["f1_score", "exact_match_rate"] if col in chart_df.columns]
+            quality_df = numeric_long_frame(chart_df, "run_index", quality_cols) if quality_cols else pd.DataFrame()
+            if quality_df.empty:
+                quality_df = chart_df[["run_index", "f1_score"]].rename(columns={"f1_score": "value"})
+                quality_df["metric"] = "f1_score"
             fig = px.line(
-                chart_df,
+                quality_df,
                 x="run_index",
-                y="f1_score",
+                y="value",
+                color="metric",
                 markers=True,
-                title="F1 演化曲线（关注峰值、当前值和回滚保护）",
-                color_discrete_sequence=["#2563eb"],
+                title="质量指标演化曲线（F1 / Exact Match）",
+                color_discrete_sequence=["#2563eb", "#16a34a"],
             )
             fig.update_layout(height=330, margin=dict(l=12, r=12, t=48, b=12))
             fig.update_yaxes(range=[0.8, 1.0])
@@ -404,11 +428,14 @@ def render_evolution(version_records):
         )
     df = pd.DataFrame(rows)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4, c5 = st.columns(5)
     accepted, rolled_back, candidates = event_summary(version_records)
+    accept_rate, rollback_rate = patch_rate_summary(version_records)
     c1.metric("候选补丁", candidates)
     c2.metric("接受补丁", accepted)
     c3.metric("回滚补丁", rolled_back)
+    c4.metric("接受率", f"{accept_rate:.1%}")
+    c5.metric("回滚率", f"{rollback_rate:.1%}")
 
     f1_cols = [col for col in ["baseline_f1", "sample_f1", "replay_f1", "full_f1"] if col in df.columns]
     f1_df = df[f1_cols].dropna(how="all")

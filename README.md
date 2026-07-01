@@ -282,6 +282,21 @@ Dashboard 展示：
 - Few-shot 样例
 - SAF 轨迹和跨领域迁移测试结果
 
+## 核心指标
+
+项目默认保留一组最小但高信号的核心指标，避免指标过多导致演示分散：
+
+| 指标 | 含义 | 回答的问题 |
+| --- | --- | --- |
+| `F1 Score` | 字段级综合 F1 | 结构化抽取整体效果是否稳定 |
+| `Exact Match Rate` | 全字段完全正确的样本比例 | 多少条样本可以直接进入下游系统 |
+| `Tokens / Sample` | 平均每条样本消耗 Token | 是否真正降低 LLM 成本 |
+| `Latency / Sample` | 平均每条样本处理耗时 | 批处理延迟是否可控 |
+| `Patch Accept Rate` | 候选补丁通过回归门控的比例 | 自进化是否产生有效更新 |
+| `Rollback Rate` | 候选补丁被回滚的比例 | 防退化机制是否在发挥作用 |
+
+其中 `F1 Score` 和 `Exact Match Rate` 衡量效果，`Tokens / Sample` 和 `Latency / Sample` 衡量成本与效率，`Patch Accept Rate` 和 `Rollback Rate` 衡量自进化安全性。Dashboard 会优先展示这组指标；更细的字段级错误可以通过 bad-case trace 和 evolution log 继续下钻。
+
 ## 项目结构
 
 ```text

@@ -205,16 +205,32 @@ def execution_max_tokens(config, item_count):
     return max(floor, per_item * max(1, item_count))
 
 
-def log_metrics(epoch, f1_score, llm_stats=None, elapsed_ms=None):
+def log_metrics(epoch, f1_score, llm_stats=None, elapsed_ms=None, sample_count=0, exact_match_rate=0.0):
     file_path = "memory/metrics.csv"
     file_exists = os.path.exists(file_path)
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    if file_exists:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            header = f.readline()
+        if "exact_match_rate" not in header:
+            legacy_path = f"memory/metrics_legacy_{int(time.time())}.csv"
+            os.replace(file_path, legacy_path)
+            print(f"[Metrics] Existing metrics.csv used the old schema; moved it to {legacy_path}.")
+            file_exists = False
     llm_stats = llm_stats or {}
+    sample_count = int(sample_count or 0)
+    total_tokens = int(llm_stats.get("total_tokens", 0) or 0)
+    cache_hits = int(llm_stats.get("cache_hits", 0) or 0)
+    cache_misses = int(llm_stats.get("cache_misses", 0) or 0)
+    elapsed_ms = int(elapsed_ms or 0)
+    tokens_per_sample = total_tokens / sample_count if sample_count else 0.0
+    latency_per_sample_ms = elapsed_ms / sample_count if sample_count else 0.0
+    cache_hit_rate = cache_hits / (cache_hits + cache_misses) if (cache_hits + cache_misses) else 0.0
     with open(file_path, mode="a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(["epoch", "f1_score", "llm_calls", "cache_hits", "cache_misses", "prompt_tokens", "completion_tokens", "total_tokens", "elapsed_ms"])
-        writer.writerow([epoch, f1_score, llm_stats.get("calls", 0), llm_stats.get("cache_hits", 0), llm_stats.get("cache_misses", 0), llm_stats.get("prompt_tokens", 0), llm_stats.get("completion_tokens", 0), llm_stats.get("total_tokens", 0), int(elapsed_ms or 0)])
+            writer.writerow(["epoch", "f1_score", "exact_match_rate", "sample_count", "llm_calls", "cache_hits", "cache_misses", "cache_hit_rate", "prompt_tokens", "completion_tokens", "total_tokens", "tokens_per_sample", "elapsed_ms", "latency_per_sample_ms"])
+        writer.writerow([epoch, f1_score, exact_match_rate, sample_count, llm_stats.get("calls", 0), cache_hits, cache_misses, cache_hit_rate, llm_stats.get("prompt_tokens", 0), llm_stats.get("completion_tokens", 0), total_tokens, tokens_per_sample, elapsed_ms, latency_per_sample_ms])
 
 
 def log_latest_patch(patch_data):
@@ -425,7 +441,7 @@ def run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, e
     fixed_eval = evaluator.evaluate(fixed_prediction, target["ground_truth"])
     log_saf_trace(domain_adapter, target, fixed_prediction, fixed_eval, "evolve_demo_fixed_case")
     stats = llm.snapshot_stats()
-    log_metrics("evolve_demo", new_f1, stats, 0)
+    log_metrics("evolve_demo", new_f1, stats, 0, sample_count=len(golden_dataset), exact_match_rate=1.0 if fixed_eval.get("exact_match") else 0.0)
     print(f"[Evolution Demo] Patch success={success}; regression F1={new_f1:.2f}; fixed bad-case F1={fixed_eval['f1_score']:.2f}")
     if success:
         print("[Evolution Demo] Long-term memory updated after regression gates.")
@@ -527,6 +543,7 @@ def run_harness_loop(config=None):
         epoch_started = time.time()
         print(f"\n================ Epoch {epoch} ================")
         epoch_total_f1 = 0.0
+        exact_match_count = 0
         bad_case = None
         results = []
         memory_bank.refresh_skills()
@@ -566,14 +583,18 @@ def run_harness_loop(config=None):
             epoch_total_f1 += eval_result["f1_score"]
             log_saf_trace(domain_adapter, result["data"], result["prediction"], eval_result, epoch)
             if eval_result["exact_match"]:
+                exact_match_count += 1
                 memory_bank.add_successful_case(result["data"]["input"], evaluator._extract_json_from_text(result["prediction"]))
             elif bad_case is None:
                 bad_case = {"input": result["data"]["input"], "ground_truth": result["data"]["ground_truth"], "prediction": result["prediction"], "eval_result": eval_result}
         avg_f1 = epoch_total_f1 / len(golden_dataset) if golden_dataset else 0.0
+        exact_match_rate = exact_match_count / len(golden_dataset) if golden_dataset else 0.0
         elapsed_ms = (time.time() - epoch_started) * 1000
         stats = llm.snapshot_stats()
-        log_metrics(epoch, avg_f1, stats, elapsed_ms)
-        print(f"[Epoch {epoch}] F1={avg_f1:.2f}, calls={stats['calls']}, cache_hits={stats['cache_hits']}, tokens={stats['total_tokens']}, elapsed_ms={int(elapsed_ms)}")
+        log_metrics(epoch, avg_f1, stats, elapsed_ms, sample_count=len(golden_dataset), exact_match_rate=exact_match_rate)
+        tokens_per_sample = stats["total_tokens"] / len(golden_dataset) if golden_dataset else 0.0
+        latency_per_sample_ms = elapsed_ms / len(golden_dataset) if golden_dataset else 0.0
+        print(f"[Epoch {epoch}] F1={avg_f1:.2f}, exact={exact_match_rate:.2%}, calls={stats['calls']}, cache_hits={stats['cache_hits']}, tokens={stats['total_tokens']}, tokens/sample={tokens_per_sample:.1f}, latency/sample_ms={latency_per_sample_ms:.0f}, elapsed_ms={int(elapsed_ms)}")
         if avg_f1 >= 1.0:
             print("[Harness] Reached 100% F1. Evolution complete.")
             break
