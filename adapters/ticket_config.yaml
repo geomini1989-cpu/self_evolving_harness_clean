@@ -32,6 +32,7 @@ runtime:
   reset_state: false
   execution_max_tokens_floor: 240
   execution_max_tokens_per_item: 90
+  enable_cheap_json_repair: true
 
 cache:
   enabled: true

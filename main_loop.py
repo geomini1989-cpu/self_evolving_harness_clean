@@ -50,6 +50,7 @@ DEFAULT_RUNTIME = {
     "reset_state": False,
     "execution_max_tokens_floor": 240,
     "execution_max_tokens_per_item": 90,
+    "enable_cheap_json_repair": True,
 }
 DEFAULT_CACHE = {"enabled": True, "path": "memory/llm_cache.jsonl"}
 DEFAULT_EVOLUTION = {
@@ -379,6 +380,49 @@ def evaluate_optimized_batch_items(evaluator, f1_optimizer, batch_data, parsed_a
     return results
 
 
+def normalize_batch_array(evaluator, prediction_text, expected_len):
+    parsed_array = evaluator._extract_json_from_text(prediction_text)
+    if isinstance(parsed_array, dict):
+        for key in ["items", "results", "data", "outputs"]:
+            if isinstance(parsed_array.get(key), list):
+                parsed_array = parsed_array[key]
+                break
+    is_valid_batch = isinstance(parsed_array, list) and len(parsed_array) == expected_len
+    return parsed_array, is_valid_batch
+
+
+def repair_batch_json_with_cheap_model(llm, evaluator, config, prediction_text, expected_len):
+    if not bool(config.get("runtime", {}).get("enable_cheap_json_repair", True)):
+        return prediction_text, None, False
+    schema_str = json.dumps(config["schema"], ensure_ascii=False, separators=(",", ":"))
+    clipped_output = str(prediction_text or "")[:5000]
+    repair_prompt = f"""Repair the following malformed model output into valid compact JSON.
+Return only one JSON array with exactly {expected_len} objects. Do not add explanations.
+Each object must include exactly these keys: core_intent, urgency_level, entities, summary.
+Preserve the original predicted values when possible; only fix JSON syntax, wrappers, missing brackets, trailing text, or object-array shape.
+Schema labels: {schema_str}
+Malformed output:
+{clipped_output}
+"""
+    try:
+        repaired_text = llm.generate(
+            repair_prompt,
+            temperature=0.0,
+            model_type="cheap",
+            use_cache=True,
+            max_tokens=execution_max_tokens(config, expected_len),
+        )
+    except Exception as exc:
+        print(f"[Batch] Cheap JSON repair failed: {exc}")
+        return prediction_text, None, False
+    repaired_array, ok = normalize_batch_array(evaluator, repaired_text, expected_len)
+    if ok:
+        print(f"[Batch] Cheap JSON repair succeeded for batch size {expected_len}.")
+        return repaired_text, repaired_array, True
+    print(f"[Batch] Cheap JSON repair did not produce a valid array for batch size {expected_len}.")
+    return repaired_text, repaired_array, False
+
+
 def run_rule_batch(evaluator, memory_bank, batch_data):
     predictions = [infer_ground_truth(data["input"], memory_bank) for data in batch_data]
     return evaluate_optimized_batch_items(evaluator, F1PostProcessor(memory_bank), batch_data, predictions, "local_skill_fast_path", enabled=True)
@@ -472,13 +516,14 @@ def run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batc
             print(f"[Batch] LLM request failed for batch size {len(batch_data)}: {exc}; retrying as smaller batches.")
             return run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data[:midpoint], meta_intervention, enable_few_shots, enable_f1_postprocess, enable_rule_fast_path) + run_batch_with_split(llm, evaluator, config, memory_bank, f1_optimizer, batch_data[midpoint:], meta_intervention, enable_few_shots, enable_f1_postprocess, enable_rule_fast_path)
         prediction_text = "{}"
-    parsed_array = evaluator._extract_json_from_text(prediction_text)
-    if isinstance(parsed_array, dict):
-        for key in ["items", "results", "data", "outputs"]:
-            if isinstance(parsed_array.get(key), list):
-                parsed_array = parsed_array[key]
-                break
-    if isinstance(parsed_array, list) and len(parsed_array) == len(batch_data):
+    parsed_array, valid_batch = normalize_batch_array(evaluator, prediction_text, len(batch_data))
+    if not valid_batch:
+        repaired_text, repaired_array, repair_ok = repair_batch_json_with_cheap_model(llm, evaluator, config, prediction_text, len(batch_data))
+        if repair_ok:
+            prediction_text = repaired_text
+            parsed_array = repaired_array
+            valid_batch = True
+    if valid_batch:
         return evaluate_optimized_batch_items(evaluator, f1_optimizer, batch_data, parsed_array, prompt, enabled=enable_f1_postprocess)
     if len(batch_data) <= 1:
         raw_prediction = parsed_array if isinstance(parsed_array, dict) else {}
