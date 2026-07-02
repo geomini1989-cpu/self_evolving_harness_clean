@@ -51,6 +51,9 @@ DEFAULT_RUNTIME = {
     "execution_max_tokens_floor": 240,
     "execution_max_tokens_per_item": 90,
     "enable_cheap_json_repair": True,
+    "enable_quality_early_stop": True,
+    "target_f1_stop": 0.95,
+    "target_exact_stop": 0.80,
 }
 DEFAULT_CACHE = {"enabled": True, "path": "memory/llm_cache.jsonl"}
 DEFAULT_EVOLUTION = {
@@ -105,6 +108,7 @@ def parse_args():
     parser.add_argument("--force-evolution-demo", action="store_true", help="Force one bad-case attribution and skill evolution step")
     parser.add_argument("--use-llm-evolution", action="store_true", help="Use real LLM attribution and rule generation instead of local rule evolution helpers")
     parser.add_argument("--reset-state", action="store_true", help="Clear runtime memory/cache files before this run")
+    parser.add_argument("--no-early-stop", action="store_true", help="Disable quality-based early stop in multi-epoch runs")
     return parser.parse_args()
 
 
@@ -136,7 +140,7 @@ def apply_cli_overrides(config, args):
         runtime["batch_size"] = min(int(runtime.get("batch_size", 8)), 8)
         runtime["max_workers"] = min(int(runtime.get("max_workers", 6)), 2)
         runtime["enable_evolution"] = True
-        runtime["enable_few_shots"] = True
+        runtime["enable_few_shots"] = bool(runtime.get("enable_few_shots", False))
         runtime["force_evolution_demo"] = False
         runtime["use_rule_attributor"] = False
         runtime["use_rule_evolver"] = False
@@ -168,6 +172,8 @@ def apply_cli_overrides(config, args):
         runtime["enable_evolution"] = False
     if args.reset_state:
         runtime["reset_state"] = True
+    if args.no_early_stop:
+        runtime["enable_quality_early_stop"] = False
     return config
 
 
@@ -568,9 +574,14 @@ def run_harness_loop(config=None):
     enable_f1_postprocess = bool(runtime.get("enable_f1_postprocess", True))
     enable_rule_fast_path = bool(runtime.get("enable_rule_fast_path", False))
     enable_evolution = bool(runtime.get("enable_evolution", True))
+    enable_quality_early_stop = bool(runtime.get("enable_quality_early_stop", True))
+    target_f1_stop = float(runtime.get("target_f1_stop", 0.95))
+    target_exact_stop = float(runtime.get("target_exact_stop", 0.80))
     estimated_batches = (len(golden_dataset) + batch_size - 1) // batch_size
     print(f"[Harness] Batch size: {batch_size} | Estimated model batches per epoch: {estimated_batches} | Epochs: {epochs}")
     print(f"[Harness] Execution max_tokens per batch: up to {execution_max_tokens(config, batch_size)} for batch_size={batch_size}.")
+    if enable_quality_early_stop:
+        print(f"[Harness] Quality early stop: F1>={target_f1_stop:.2f} and Exact>={target_exact_stop:.0%}.")
     if enable_rule_fast_path:
         print("[Harness] Benchmark fast path: local skill execution is enabled; LLM calls should stay near zero.")
     else:
@@ -640,6 +651,9 @@ def run_harness_loop(config=None):
         tokens_per_sample = stats["total_tokens"] / len(golden_dataset) if golden_dataset else 0.0
         latency_per_sample_ms = elapsed_ms / len(golden_dataset) if golden_dataset else 0.0
         print(f"[Epoch {epoch}] F1={avg_f1:.2f}, exact={exact_match_rate:.2%}, calls={stats['calls']}, cache_hits={stats['cache_hits']}, tokens={stats['total_tokens']}, tokens/sample={tokens_per_sample:.1f}, latency/sample_ms={latency_per_sample_ms:.0f}, elapsed_ms={int(elapsed_ms)}")
+        if enable_quality_early_stop and avg_f1 >= target_f1_stop and exact_match_rate >= target_exact_stop:
+            print("[Harness] Quality target reached; stopping before extra evolution/epochs to save tokens.")
+            break
         if avg_f1 >= 1.0:
             print("[Harness] Reached 100% F1. Evolution complete.")
             break

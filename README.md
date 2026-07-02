@@ -427,6 +427,12 @@ python main_loop.py --mode llm-evolve --sample-size 300 --epochs 6 --batch-size 
 python main_loop.py --mode llm-evolve --sample-size 100 --epochs 3 --batch-size 8 --max-workers 2 --reset-state
 ```
 
+`llm-evolve` 默认启用质量目标提前停止：当 `F1 >= 0.95` 且 `Exact Match >= 80%` 时，Harness 会停止后续 epoch 和额外进化步骤，避免为了跑满轮数重复消耗 Token。若需要强制跑满全部轮次，可加：
+
+```powershell
+python main_loop.py --mode llm-evolve --sample-size 100 --epochs 6 --batch-size 5 --max-workers 2 --reset-state --no-early-stop
+```
+
 ### 3. 全量 Benchmark
 
 适合报告当前数据集总体 F1：
@@ -472,6 +478,7 @@ python main_loop.py --mode evolve-demo --use-llm-evolution
 | `--llm-benchmark` | benchmark 模式改用真实 LLM |
 | `--use-llm-evolution` | 使用 LLM 做归因和补丁生成 |
 | `--force-evolution-demo` | 强制触发一次进化演示 |
+| `--no-early-stop` | 关闭质量目标提前停止，强制跑满指定轮数 |
 
 ## Dashboard 使用
 
