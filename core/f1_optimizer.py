@@ -43,7 +43,7 @@ class F1PostProcessor:
             optimized["core_intent"] = self.REFUND
 
         optimized["urgency_level"] = self._optimize_urgency(input_text, optimized.get("core_intent"))
-        optimized["entities"] = self._merge_entities(input_text, optimized.get("entities"))
+        optimized["entities"] = self._optimize_entities(input_text, optimized.get("entities"))
         optimized["summary"] = self._optimize_summary(optimized.get("summary"))
         return optimized
 
@@ -70,17 +70,19 @@ class F1PostProcessor:
             return self.HIGH
         return self.MEDIUM
 
-    def _merge_entities(self, input_text, entities):
-        merged = []
-        if isinstance(entities, list):
-            merged.extend(str(item).strip() for item in entities if str(item).strip())
+    def _optimize_entities(self, input_text, entities):
+        # The current schema treats only explicit ids and amounts as entities.
+        # Rebuilding from the input prevents LLM over-extraction of durations or adjectives.
+        extracted = []
         for pattern in self.ENTITY_PATTERNS:
             for match in pattern.findall(input_text):
                 value = match if isinstance(match, str) else match[0]
                 value = str(value).strip()
-                if value and value not in merged:
-                    merged.append(value)
-        return merged
+                if value and value not in extracted:
+                    extracted.append(value)
+        if extracted:
+            return extracted
+        return []
 
     def _optimize_summary(self, summary):
         return "\u7528\u6237\u8d1f\u9762\u4f53\u9a8c\u5ba2\u8bc9\u5904\u7406"

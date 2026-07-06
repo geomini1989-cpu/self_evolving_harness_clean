@@ -38,8 +38,10 @@ DEFAULT_RUNTIME = {
     "max_workers": 6,
     "epochs": 6,
     "sample_size": 30,
+    "dataset_path": "data/dataset.csv",
     "shuffle_seed": 2026,
     "enable_few_shots": False,
+    "enable_skill_seed": True,
     "enable_llm_scout": False,
     "enable_f1_postprocess": True,
     "enable_rule_fast_path": False,
@@ -100,6 +102,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Self-Evolving Harness runner")
     parser.add_argument("--mode", choices=["demo", "benchmark", "evolve-demo", "llm-evolve"], default=None, help="demo: closed-loop run; benchmark: one-pass evaluation; evolve-demo: deterministic evolution showcase; llm-evolve: real LLM multi-round evolution")
     parser.add_argument("--sample-size", default=None, help="Number of rows to evaluate, or 'all' for the full dataset")
+    parser.add_argument("--dataset-path", default=None, help="CSV dataset path. The text column can be review/text/content/评价.")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--max-workers", type=int, default=None)
@@ -109,6 +112,10 @@ def parse_args():
     parser.add_argument("--use-llm-evolution", action="store_true", help="Use real LLM attribution and rule generation instead of local rule evolution helpers")
     parser.add_argument("--reset-state", action="store_true", help="Clear runtime memory/cache files before this run")
     parser.add_argument("--no-early-stop", action="store_true", help="Disable quality-based early stop in multi-epoch runs")
+    parser.add_argument("--no-skill-seed", action="store_true", help="Do not restore adapters/ticket_base_skill.md into memory/SKILL.md")
+    parser.add_argument("--no-f1-postprocess", action="store_true", help="Evaluate raw LLM outputs without deterministic F1 post-processing")
+    parser.add_argument("--enable-few-shots", action="store_true", help="Inject few-shot examples learned during this run")
+    parser.add_argument("--prefer-skill-patch", action="store_true", help="Prefer SkillRepo patches over few-shot patches for non-schema bad cases")
     return parser.parse_args()
 
 
@@ -162,6 +169,8 @@ def apply_cli_overrides(config, args):
         runtime["enable_rule_fast_path"] = False
     if args.sample_size is not None:
         runtime["sample_size"] = None if str(args.sample_size).lower() in {"all", "full", "none"} else int(args.sample_size)
+    if args.dataset_path is not None:
+        runtime["dataset_path"] = args.dataset_path
     if args.epochs is not None:
         runtime["epochs"] = args.epochs
     if args.batch_size is not None:
@@ -174,6 +183,15 @@ def apply_cli_overrides(config, args):
         runtime["reset_state"] = True
     if args.no_early_stop:
         runtime["enable_quality_early_stop"] = False
+    if args.no_skill_seed:
+        runtime["enable_skill_seed"] = False
+    if args.no_f1_postprocess:
+        runtime["enable_f1_postprocess"] = False
+    if args.enable_few_shots:
+        runtime["enable_few_shots"] = True
+    if args.prefer_skill_patch:
+        config["evolution"]["prefer_few_shot_first"] = False
+        config["evolution"]["prefer_skill_patch"] = True
     return config
 
 
@@ -290,8 +308,8 @@ def is_complaint_candidate(text, label=None):
     return not any(keyword in text for keyword in POSITIVE_KEYWORDS)
 
 
-def init_real_dataset(sample_size=30, shuffle_seed=2026):
-    local_file = "data/dataset.csv"
+def init_real_dataset(sample_size=30, shuffle_seed=2026, dataset_path="data/dataset.csv"):
+    local_file = dataset_path
     print(f"[Dataset] Loading local dataset: {local_file}")
     try:
         if not os.path.exists(local_file):
@@ -329,7 +347,7 @@ def init_real_dataset(sample_size=30, shuffle_seed=2026):
                     continue
                 golden_dataset.append({"input": text, "ground_truth": infer_ground_truth(text, label_router)})
         if not golden_dataset:
-            raise ValueError("No valid text rows found in dataset.csv")
+            raise ValueError(f"No valid text rows found in {local_file}")
         print(f"[Dataset] Loaded {len(golden_dataset)} samples.")
         return golden_dataset
     except Exception as exc:
@@ -341,10 +359,12 @@ def init_real_dataset(sample_size=30, shuffle_seed=2026):
         ]
 
 
-def prepare_demo_env(reset_state=False):
+def prepare_demo_env(reset_state=False, enable_skill_seed=True):
     os.makedirs("memory", exist_ok=True)
     os.makedirs("adapters", exist_ok=True)
     if not reset_state:
+        if enable_skill_seed:
+            ensure_base_skill_repo()
         return
     print("[Harness] Resetting runtime memory and cache files.")
     reset_files = [
@@ -368,6 +388,21 @@ def prepare_demo_env(reset_state=False):
     for file in reset_files:
         if os.path.exists(file):
             os.remove(file)
+    if enable_skill_seed:
+        ensure_base_skill_repo()
+
+
+def ensure_base_skill_repo():
+    skill_file = "memory/SKILL.md"
+    seed_file = "adapters/ticket_base_skill.md"
+    if os.path.exists(skill_file) or not os.path.exists(seed_file):
+        return
+    os.makedirs(os.path.dirname(skill_file), exist_ok=True)
+    with open(seed_file, "r", encoding="utf-8") as src:
+        content = src.read().strip()
+    with open(skill_file, "w", encoding="utf-8") as dst:
+        dst.write(content + "\n")
+    print("[Harness] Seeded base SkillRepo from adapters/ticket_base_skill.md.")
 
 
 def evaluate_optimized_batch_items(evaluator, f1_optimizer, batch_data, parsed_array, prompt, enabled=True):
@@ -552,7 +587,10 @@ def run_harness_loop(config=None):
     config_path = "adapters/ticket_config.yaml"
     config = config or load_config(config_path)
     runtime = config["runtime"]
-    prepare_demo_env(reset_state=bool(runtime.get("reset_state", False)))
+    prepare_demo_env(
+        reset_state=bool(runtime.get("reset_state", False)),
+        enable_skill_seed=bool(runtime.get("enable_skill_seed", True)),
+    )
     llm = BaseLLMClient(cache_enabled=bool(config["cache"].get("enabled", True)), cache_path=config["cache"].get("path", "memory/llm_cache.jsonl"))
     evaluator = TaskEvaluator(config_path)
     domain_adapter = TicketAdapter(schema=config.get("schema", {}))
@@ -562,7 +600,11 @@ def run_harness_loop(config=None):
     evolver = SkillEvolver(evaluator, llm)
     sample_size = runtime.get("sample_size", 30)
     sample_size = None if sample_size in [None, "all", "full"] else int(sample_size)
-    golden_dataset = init_real_dataset(sample_size=sample_size, shuffle_seed=runtime.get("shuffle_seed", 2026))
+    golden_dataset = init_real_dataset(
+        sample_size=sample_size,
+        shuffle_seed=runtime.get("shuffle_seed", 2026),
+        dataset_path=runtime.get("dataset_path", "data/dataset.csv"),
+    )
     print(f"[Harness] Mode: {runtime.get('mode', 'demo')} | Dataset size: {len(golden_dataset)}")
     if bool(runtime.get("force_evolution_demo", False)):
         run_forced_evolution_demo(config, llm, evaluator, memory_bank, attributor, evolver, golden_dataset, domain_adapter)
@@ -674,6 +716,14 @@ def run_harness_loop(config=None):
                     if "few_shot_first_policy" not in patch["risk_flags"]:
                         patch["risk_flags"].append("few_shot_first_policy")
                     print("[Harness] Few-shot-first policy: using a low-risk example patch for this bad case.")
+            if bool(config.get("evolution", {}).get("prefer_skill_patch", False)):
+                root_type = patch.get("root_cause_type")
+                if root_type not in {"json_format_error", "schema_field_error"}:
+                    patch["evolution_action"] = "skill_patch"
+                    patch.setdefault("risk_flags", [])
+                    if "skill_patch_preferred" not in patch["risk_flags"]:
+                        patch["risk_flags"].append("skill_patch_preferred")
+                    print("[Harness] Skill-first policy: trying to grow SkillRepo from this bad case.")
             log_latest_patch(patch)
             baseline_f1 = avg_f1
             new_f1, success = evolver.apply_patch_with_rollback(attributor=attributor, patch_data=patch, config=config, golden_set=golden_dataset, build_prompt_func=build_batch_execution_prompt, baseline_f1=baseline_f1)

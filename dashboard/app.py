@@ -5,10 +5,13 @@ from pathlib import Path
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MEMORY_DIR = ROOT / "memory"
+DATA_DIR = ROOT / "data"
+CONFIG_PATH = ROOT / "adapters" / "ticket_config.yaml"
 
 st.set_page_config(layout="wide", page_title="自进化智能体评测与优化平台")
 
@@ -199,6 +202,51 @@ def read_text(name):
         return f.read()
 
 
+@st.cache_data(ttl=3)
+def read_config():
+    if not CONFIG_PATH.exists():
+        return {}
+    with open(CONFIG_PATH, "r", encoding="utf-8", errors="ignore") as f:
+        return yaml.safe_load(f) or {}
+
+
+@st.cache_data(ttl=3)
+def list_dataset_files():
+    DATA_DIR.mkdir(exist_ok=True)
+    return sorted(str(path.relative_to(ROOT)).replace("\\", "/") for path in DATA_DIR.glob("*.csv"))
+
+
+@st.cache_data(ttl=3)
+def read_dataset_preview(dataset_path):
+    file_path = ROOT / dataset_path
+    if not file_path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(file_path, dtype=str, on_bad_lines="skip", nrows=500)
+
+
+def detect_text_column(df):
+    candidates = ["review", "text", "content", "评价"]
+    lowered = {str(col).strip().lower(): col for col in df.columns}
+    for name in candidates:
+        if name.lower() in lowered:
+            return lowered[name.lower()]
+    return df.columns[0] if len(df.columns) else None
+
+
+def build_run_command(dataset_path, mode, sample_size, epochs, batch_size, max_workers, extra_flags):
+    parts = [
+        "python main_loop.py",
+        f"--mode {mode}",
+        f"--dataset-path {dataset_path}",
+        f"--sample-size {sample_size}",
+        f"--epochs {epochs}",
+        f"--batch-size {batch_size}",
+        f"--max-workers {max_workers}",
+    ]
+    parts.extend(extra_flags)
+    return " ".join(parts)
+
+
 def parse_skill_blocks(skill_text):
     pattern = re.compile(r"##\s*\[(.*?)\]\s*(.*?)\n(.*?)(?=\n##|\Z)", re.DOTALL)
     rows = []
@@ -296,6 +344,84 @@ def render_global_header():
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_dataset_manager():
+    st.subheader("数据集管理")
+    st.markdown('<div class="section-note">选择或上传 CSV 数据集，然后复制下方命令运行同一套 Harness。</div>', unsafe_allow_html=True)
+
+    config = read_config()
+    runtime = config.get("runtime", {}) if isinstance(config, dict) else {}
+    configured_path = runtime.get("dataset_path", "data/dataset.csv")
+    datasets = list_dataset_files()
+    if configured_path not in datasets and (ROOT / configured_path).exists():
+        datasets.insert(0, configured_path)
+    if not datasets:
+        st.warning("data/ 目录下还没有 CSV 数据集。")
+        datasets = ["data/dataset.csv"]
+
+    left, right = st.columns([1.15, 0.85])
+    with left:
+        default_index = datasets.index(configured_path) if configured_path in datasets else 0
+        selected_path = st.selectbox("选择数据集", datasets, index=default_index)
+        preview_df = read_dataset_preview(selected_path)
+        text_col = detect_text_column(preview_df) if not preview_df.empty else None
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("数据集", selected_path)
+        c2.metric("预览样本", len(preview_df))
+        c3.metric("文本列", text_col or "-")
+
+        if not preview_df.empty:
+            label_col = next((col for col in preview_df.columns if str(col).strip().lower() in {"label", "sentiment"}), None)
+            if label_col:
+                label_counts = preview_df[label_col].value_counts(dropna=False).reset_index()
+                label_counts.columns = [label_col, "count"]
+                fig = px.bar(label_counts, x=label_col, y="count", title="标签分布预览")
+                fig.update_layout(height=260, margin=dict(l=12, r=12, t=48, b=12))
+                plot_chart(fig)
+            show_table(preview_df.head(30), hide_index=True)
+        else:
+            st.info("无法读取该数据集，确认路径和 CSV 格式是否正确。")
+
+    with right:
+        uploaded = st.file_uploader("上传新的 CSV 数据集", type=["csv"])
+        if uploaded is not None:
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", uploaded.name).strip("._") or "uploaded_dataset.csv"
+            if not safe_name.lower().endswith(".csv"):
+                safe_name += ".csv"
+            target_path = DATA_DIR / safe_name
+            if st.button("保存到 data/"):
+                DATA_DIR.mkdir(exist_ok=True)
+                target_path.write_bytes(uploaded.getvalue())
+                st.success(f"已保存为 data/{safe_name}")
+                st.cache_data.clear()
+                st.rerun()
+
+        mode = st.selectbox("运行模式", ["demo", "benchmark", "llm-evolve", "evolve-demo"], index=0)
+        sample_size = st.text_input("样本数", value="50")
+        epochs = st.number_input("轮数", min_value=1, max_value=20, value=3, step=1)
+        batch_size = st.number_input("Batch size", min_value=1, max_value=64, value=8, step=1)
+        max_workers = st.number_input("并发数", min_value=1, max_value=8, value=2, step=1)
+        reset_state = st.checkbox("重置运行记忆", value=True)
+        from_zero = st.checkbox("从 0 开始：不加载基础 SkillRepo", value=False)
+        raw_llm = st.checkbox("关闭 F1 后处理，看原始 LLM 能力", value=False)
+        prefer_skill = st.checkbox("优先生成 SkillRepo", value=False)
+
+        extra_flags = []
+        if reset_state:
+            extra_flags.append("--reset-state")
+        if from_zero:
+            extra_flags.append("--no-skill-seed")
+        if raw_llm:
+            extra_flags.append("--no-f1-postprocess")
+        if prefer_skill:
+            extra_flags.append("--prefer-skill-patch")
+            extra_flags.append("--enable-few-shots")
+            extra_flags.append("--no-early-stop")
+        command = build_run_command(selected_path, mode, sample_size, int(epochs), int(batch_size), int(max_workers), extra_flags)
+        st.write("运行命令")
+        st.code(command, language="powershell")
 
 
 def render_demo_overview(metrics_df, token_df, versions, tips, rejected, skill_text, prompt_policy, examples, transfer_report):
@@ -637,6 +763,8 @@ tab_demo, tab_evolution, tab_memory, tab_transfer, tab_trace, tab_patch = st.tab
 )
 
 with tab_demo:
+    render_dataset_manager()
+    st.divider()
     render_demo_overview(metrics, tokens, versions, tips, rejected, skill_text, prompt_policy, examples, transfer_report)
 
 with tab_evolution:

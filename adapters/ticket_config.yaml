@@ -16,6 +16,7 @@ evaluation:
 
 runtime:
   mode: "demo"
+  dataset_path: "data/dataset.csv"
   batch_size: 8
   max_workers: 6
   epochs: 6

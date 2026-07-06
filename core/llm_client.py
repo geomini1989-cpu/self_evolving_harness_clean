@@ -32,9 +32,9 @@ class BaseLLMClient:
             self.client = OpenAI(api_key=api_key, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", http_client=custom_http_client)
         if not hasattr(self, "timeout_seconds"):
             self.timeout_seconds = 0
-        self.cheap_model = os.getenv("CHEAP_MODEL", "kimi-k2.7-code")
-        self.default_model = os.getenv("DEFAULT_MODEL", "kimi-k2.7-code")
-        self.smart_model = os.getenv("SMART_MODEL", "kimi-k2.7-code")
+        self.cheap_model = os.getenv("CHEAP_MODEL", "glm-5.1")
+        self.default_model = os.getenv("DEFAULT_MODEL", "glm-5.1")
+        self.smart_model = os.getenv("SMART_MODEL", "glm-5.1")
         self.cache_enabled = cache_enabled
         self.cache_path = cache_path
         self.usage_log_path = usage_log_path
